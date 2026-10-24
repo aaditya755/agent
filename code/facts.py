@@ -62,6 +62,34 @@ SYSTEM_ORIGIN_MAP = {
     "marketing_platform": "marketing_platform",
 }
 
+PREFIX_SYSTEM_MAP = {
+    "account": "account_service",
+    "search": "search_service",
+    "analytics": "analytics_platform",
+    "support": "support_platform",
+    "data_flow": "integration_service",
+    "backup": "backup_service",
+    "audit_record": "security_service",
+    "export": "export_service",
+    "tombstone": "identity_service",
+    "legal_hold": "legal_service",
+    "marketing": "marketing_platform",
+    "object": "object_storage",
+    "cache": "cache_service",
+    "email_delivery": "email_delivery_service",
+}
+
+
+def normalize_system_id(sys_id: str, resource_id: str = "") -> str:
+    """Normalize system_id using canonical resource prefix mapping."""
+    if resource_id:
+        clean_res = resource_id.strip('"\'')
+        m = re.match(r"^([a-zA-Z_]+)_\d+", clean_res)
+        pfx = m.group(1) if m else clean_res.split("_")[0]
+        if pfx in PREFIX_SYSTEM_MAP:
+            return PREFIX_SYSTEM_MAP[pfx]
+    return SYSTEM_ORIGIN_MAP.get(sys_id, sys_id)
+
 TABLE_SYSTEM_MAP = {
     "customer_profiles": "account_service",
     "customer_profiles_primary": "account_service",
@@ -266,14 +294,21 @@ def _populate_evidence_facts(con: sqlite3.Connection):
     facts = []
     coverage = []
 
+    def add_fact(f_id, c_at, s_id, t_topo, r_id, kind_name, f_json):
+        clean_res = r_id.strip('"\'') if r_id else ""
+        norm_sys = normalize_system_id(s_id, clean_res)
+        facts.append((f_id, c_at, norm_sys, t_topo, clean_res, kind_name, f_json))
+
+    kv_re = re.compile(r'(\w+)=(?:\"([^\"]*)\"|(\S+))')
+
     for fid, rel_path, origin, captured_at in ev_files:
         fpath = DATASET_DIR / rel_path
         ext = fpath.suffix.lower()
 
         if ext == ".png":
-            sys_id = SYSTEM_ORIGIN_MAP.get(origin, origin)
+            sys_id = normalize_system_id(origin)
             topo = detect_topology(origin, fpath.name)
-            facts.append((fid, captured_at, sys_id, topo, "", "PNG_PENDING", "{}"))
+            add_fact(fid, captured_at, sys_id, topo, "", "PNG_PENDING", "{}")
             coverage.append((fid, captured_at, sys_id, topo))
 
         elif ext == ".sql":
@@ -285,9 +320,9 @@ def _populate_evidence_facts(con: sqlite3.Connection):
                 if t == "snapshot_scope":
                     for s_row in mem_con.execute("SELECT origin_system, captured_at FROM snapshot_scope").fetchall():
                         s_sys, s_time = s_row
-                        coverage.append((fid, s_time or captured_at, s_sys, "inventory"))
+                        coverage.append((fid, s_time or captured_at, normalize_system_id(s_sys), "inventory"))
                     continue
-                t_sys = TABLE_SYSTEM_MAP.get(t, SYSTEM_ORIGIN_MAP.get(origin, origin))
+                t_sys = TABLE_SYSTEM_MAP.get(t, normalize_system_id(origin))
                 t_topo = detect_topology(origin, t)
                 coverage.append((fid, captured_at, t_sys, t_topo))
                 cur_t = mem_con.execute(f"SELECT * FROM {t}")
@@ -296,7 +331,7 @@ def _populate_evidence_facts(con: sqlite3.Connection):
                     row_dict = dict(zip(cols, row))
                     res_id = row_dict.get("resource_id") or ""
                     if res_id:
-                        facts.append((fid, captured_at, t_sys, t_topo, res_id, "RECORD", json.dumps(row_dict, default=str)))
+                        add_fact(fid, captured_at, t_sys, t_topo, res_id, "RECORD", json.dumps(row_dict, default=str))
 
         elif ext == ".json":
             with open(fpath, "r", encoding="utf-8") as f:
@@ -305,32 +340,33 @@ def _populate_evidence_facts(con: sqlite3.Connection):
             if "snapshots" in data and isinstance(data["snapshots"], list):
                 for sn in data["snapshots"]:
                     col = sn.get("collection") or sn.get("resource_type") or ""
-                    sn_sys = TABLE_SYSTEM_MAP.get(col, SYSTEM_ORIGIN_MAP.get(origin, origin))
+                    sn_sys = TABLE_SYSTEM_MAP.get(col, normalize_system_id(origin))
                     coverage.append((fid, captured_at, sn_sys, topo))
                     for rec in sn.get("records", []):
                         res_id = rec.get("resource_id") or ""
                         if res_id:
-                            facts.append((fid, captured_at, sn_sys, topo, res_id, "RECORD", json.dumps(rec, default=str)))
+                            add_fact(fid, captured_at, sn_sys, topo, res_id, "RECORD", json.dumps(rec, default=str))
             elif "service_exports" in data and isinstance(data["service_exports"], dict):
                 for s_name, s_val in data["service_exports"].items():
-                    coverage.append((fid, captured_at, s_name, topo))
+                    norm_s_name = normalize_system_id(s_name)
+                    coverage.append((fid, captured_at, norm_s_name, topo))
                     for col_name, rec_list in s_val.items():
                         if isinstance(rec_list, list):
                             for rec in rec_list:
                                 res_id = rec.get("resource_id") or ""
                                 if res_id:
-                                    facts.append((fid, captured_at, s_name, topo, res_id, "RECORD", json.dumps(rec, default=str)))
+                                    add_fact(fid, captured_at, norm_s_name, topo, res_id, "RECORD", json.dumps(rec, default=str))
             elif "records" in data and isinstance(data["records"], list):
-                sys_id = SYSTEM_ORIGIN_MAP.get(origin, origin)
+                sys_id = normalize_system_id(origin)
                 coverage.append((fid, captured_at, sys_id, topo))
                 for rec in data["records"]:
                     res_id = rec.get("resource_id") or ""
                     if res_id:
                         rec_sys = rec.get("system") or sys_id
-                        facts.append((fid, captured_at, rec_sys, topo, res_id, "RECORD", json.dumps(rec, default=str)))
+                        add_fact(fid, captured_at, rec_sys, topo, res_id, "RECORD", json.dumps(rec, default=str))
 
         elif ext == ".txt":
-            sys_id = SYSTEM_ORIGIN_MAP.get(origin, origin)
+            sys_id = normalize_system_id(origin)
             topo = detect_topology(origin, fpath.name)
             coverage.append((fid, captured_at, sys_id, topo))
             with open(fpath, "r", encoding="utf-8") as f:
@@ -343,25 +379,41 @@ def _populate_evidence_facts(con: sqlite3.Connection):
                             subj = parts[5] if len(parts) > 5 else ""
                             rec_dict = {
                                 "timestamp": ts,
-                                "system_id": s_id,
-                                "resource_id": r_id,
+                                "system_id": normalize_system_id(s_id, r_id),
+                                "resource_id": r_id.strip('"\''),
                                 "record_type": rec_type,
                                 "result": result,
                                 "subject_reference": subj,
                             }
-                            facts.append((fid, ts or captured_at, s_id, topo, r_id, "HANDOVER_RECORD", json.dumps(rec_dict)))
+                            add_fact(fid, ts or captured_at, s_id, topo, r_id, "HANDOVER_RECORD", json.dumps(rec_dict))
 
         elif ext == ".log":
-            sys_id = SYSTEM_ORIGIN_MAP.get(origin, origin)
+            sys_id = normalize_system_id(origin)
             topo = "log"
             coverage.append((fid, captured_at, sys_id, topo))
-            line_re = re.compile(r"^(\S+)\s+\[(\w+)\]\s+\[([\w\-]+)\]\s+\[([\w\-]+)\]\s+([\w\-]+):\s*(.*)$")
-            kv_re = re.compile(r'(\w+)=(?:\"([^\"]*)\"|(\S+))')
             with open(fpath, "r", encoding="utf-8") as f:
                 for line in f:
-                    m = line_re.match(line.strip())
-                    if m:
-                        ts, level, log_sys, trace_id, event_name, rest = m.groups()
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # 1. Check structured JSON log lines
+                    m_json = re.match(r"^(\S+)\s+(\{.*\})$", line)
+                    if m_json:
+                        ts, jstr = m_json.groups()
+                        try:
+                            jd = json.loads(jstr)
+                            res_id = jd.get("resource_id") or ""
+                            log_sys = jd.get("service") or jd.get("logger") or sys_id
+                            if res_id:
+                                add_fact(fid, ts, log_sys, topo, res_id, "LOG_EVENT", json.dumps(jd))
+                            continue
+                        except Exception:
+                            pass
+
+                    # 2. Check bracketed log lines
+                    m_br = re.match(r"^(\S+)\s+\[(\w+)\]\s+\[([\w\-]+)\]\s+\[([\w\-]+)\]\s+([\w\-]+):\s*(.*)$", line)
+                    if m_br:
+                        ts, level, log_sys, trace_id, event_name, rest = m_br.groups()
                         kvs = {}
                         for k, v1, v2 in kv_re.findall(rest):
                             kvs[k] = v1 if v1 != "" else v2
@@ -371,16 +423,29 @@ def _populate_evidence_facts(con: sqlite3.Connection):
                             kvs["log_system"] = log_sys
                             kvs["trace_id"] = trace_id
                             kvs["event_name"] = event_name
-                            facts.append((fid, ts, log_sys, topo, res_id, "LOG_EVENT", json.dumps(kvs)))
+                            add_fact(fid, ts, log_sys, topo, res_id, "LOG_EVENT", json.dumps(kvs))
+                        continue
+
+                    # 3. Check unbracketed key=value log lines
+                    m_kv = re.match(r"^(\S+)\s+(.*)$", line)
+                    if m_kv:
+                        ts, rest = m_kv.groups()
+                        kvs = {}
+                        for k, v1, v2 in kv_re.findall(rest):
+                            kvs[k] = v1 if v1 != "" else v2
+                        res_id = kvs.get("resource_id") or ""
+                        log_sys = kvs.get("service") or sys_id
+                        if res_id:
+                            add_fact(fid, ts, log_sys, topo, res_id, "LOG_EVENT", json.dumps(kvs))
 
         elif ext == ".pdf":
-            sys_id = SYSTEM_ORIGIN_MAP.get(origin, origin)
+            sys_id = normalize_system_id(origin)
             topo = "document"
             coverage.append((fid, captured_at, sys_id, topo))
             with pdfplumber.open(fpath) as doc:
                 full_text = "\n".join([page.extract_text() or "" for page in doc.pages])
 
-            # Extract structured order entries in legal retention register
+            # Extract structured order entries in legal retention register (evidence_27)
             order_rows = re.findall(
                 r"(ORD-\d+)\s*\|\s*(user_\d+)\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*Retain until\s*([^|]+)\|\s*(\w+)",
                 full_text,
@@ -393,17 +458,31 @@ def _populate_evidence_facts(con: sqlite3.Connection):
                     "retain_until": retain_dt.strip(),
                     "amount": amt.strip(),
                 }
-                facts.append((fid, captured_at, "legal_service", topo, ord_id, "LEGAL_HOLD_RECORD", json.dumps(ord_dict)))
+                add_fact(fid, captured_at, "legal_service", topo, ord_id, "LEGAL_HOLD_RECORD", json.dumps(ord_dict))
 
-            # Extract security audit records in extracts
+            # Extract account statement & export references (evidence_18)
+            nst_matches = set(re.findall(r"Statement\s+(NST-\d+-\d+-\d+)", full_text, re.IGNORECASE))
+            for nst in nst_matches:
+                m_num = re.search(r"NST-\d+-(\d+)-(\d+)", nst)
+                export_id = f"export_{m_num.group(2)}" if m_num else nst
+                stmt_dict = {"statement_id": nst, "export_id": export_id, "user_id": "user_18", "text": full_text[:400]}
+                add_fact(fid, captured_at, "export_service", topo, export_id, "DOCUMENT_RECORD", json.dumps(stmt_dict))
+                add_fact(fid, captured_at, "account_service", topo, nst, "DOCUMENT_RECORD", json.dumps(stmt_dict))
+
+            ord_matches = set(re.findall(r"(ORD-\d+)", full_text))
+            for om in ord_matches:
+                if not any(om == r[0] for r in order_rows):
+                    add_fact(fid, captured_at, sys_id, topo, om, "DOCUMENT_RECORD", json.dumps({"order_id": om, "text": full_text[:400]}))
+
+            # Extract security audit records in extracts (evidence_55)
             audit_matches = set(re.findall(r"(audit_record_\d+)", full_text))
             for arm in audit_matches:
-                facts.append((fid, captured_at, "security_service", topo, arm, "PDF_RECORD", json.dumps({"text_extract": full_text[:500]})))
+                add_fact(fid, captured_at, "security_service", topo, arm, "PDF_RECORD", json.dumps({"text_extract": full_text[:500]}))
 
-            # Extract support message references in attachments
+            # Extract support message references in attachments (evidence_58)
             supp_matches = set(re.findall(r"(support_\d+)", full_text))
             for sm in supp_matches:
-                facts.append((fid, captured_at, "support_platform", topo, sm, "PDF_RECORD", json.dumps({"text_extract": full_text[:500]})))
+                add_fact(fid, captured_at, "support_platform", topo, sm, "PDF_RECORD", json.dumps({"text_extract": full_text[:500]}))
 
     cur.executemany(
         "INSERT INTO facts (file_id, captured_at, system_id, topology, resource_id, kind, fields_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
