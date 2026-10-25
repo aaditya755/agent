@@ -72,11 +72,8 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None, use_agen
 
     if use_agent:
         import agent
-        png_fids = {
-            "evidence_04", "evidence_09", "evidence_14", "evidence_19",
-            "evidence_23", "evidence_28", "evidence_32", "evidence_37",
-            "evidence_42", "evidence_46", "evidence_60",
-        }
+        with open(config.EVIDENCE_FILES_PATH, "r", encoding="utf-8") as f:
+            png_fids = {r["file_id"] for r in csv.DictReader(f) if r["file_path"].lower().endswith(".png")}
         cat1_cases = []  # CLASSIFY_REQUEST or text intent signal
         cat2_cases = []  # support_ambiguous
         cat3_cases = []  # PNG-only cases
@@ -104,12 +101,12 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None, use_agen
         print(f"  * Cat 4 (Unlinked/warnings): {len(cat4_cases)}")
 
         if total_flagged_count > 80:
-            print(f"Flagged count ({total_flagged_count}) exceeds 80: taking first three categories up to 40 cases.")
+            print(f"Flagged count ({total_flagged_count}) exceeds 80: taking first three categories up to 29 cases.")
             target_flagged = cat1_cases + cat3_cases
-            needed = 40 - len(target_flagged)
+            needed = 29 - len(target_flagged)
             target_flagged += cat2_cases[:max(0, needed)]
         else:
-            target_flagged = cat1_cases + cat3_cases + cat2_cases[:20]
+            target_flagged = cat1_cases + cat3_cases + cat2_cases[:10]
 
         flagged_cids = {r["case_id"] for r in target_flagged}
         print(f"Running agent on {len(flagged_cids)} flagged cases with concurrency 3...")
@@ -206,12 +203,13 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None, use_agen
 
 
 
-def cmd_llm_models(provider: str = "nim"):
+def cmd_llm_models(provider: Optional[str] = None):
     """List models available to current key matching keywords (NIM) or generateContent (Gemini)."""
     import config
     import llm
+    import os
 
-    if provider.lower() in ["nim", "openai_compat", "nvidia"]:
+    if provider and provider.lower() in ["nim", "openai_compat", "nvidia"]:
         client = llm.get_openai_client()
         keywords = ["nemotron", "llama", "qwen", "mistral", "deepseek", "gpt-oss", "gemma"]
         try:
@@ -224,7 +222,7 @@ def cmd_llm_models(provider: str = "nim"):
             sys.exit(1)
     else:
         try:
-            client = llm.get_gemini_client()
+            client = llm.get_client()
             for m in client.models.list():
                 actions = getattr(m, "supported_actions", None) or []
                 if any("generateContent" in a for a in actions):
@@ -383,7 +381,7 @@ def cmd_llm_smoke():
     seq_lats = []
     seq_inps = 0
     seq_outs = 0
-    seq_429s = 0
+    seq_ratelimits = 0
     for i in range(1, 7):
         t0 = time.perf_counter()
         try:
@@ -403,7 +401,7 @@ def cmd_llm_smoke():
         except Exception as e:
             lat = (time.perf_counter() - t0) * 1000.0
             if "429" in str(e) or "quota" in str(e).lower():
-                seq_429s += 1
+                seq_ratelimits += 1
             print(f"[Seq {i}] FAIL: latency={lat:.1f}ms, error={e}")
 
     # 3 parallel calls
@@ -411,7 +409,7 @@ def cmd_llm_smoke():
     par_lats = []
     par_inps = 0
     par_outs = 0
-    par_429s = 0
+    par_ratelimits = 0
 
     def run_one_par(idx: int):
         t0 = time.perf_counter()
@@ -428,29 +426,29 @@ def cmd_llm_smoke():
             return True, lat, r.input_tokens, r.output_tokens, 0, r.text.strip()
         except Exception as e:
             lat = (time.perf_counter() - t0) * 1000.0
-            is_429 = 1 if ("429" in str(e) or "quota" in str(e).lower()) else 0
-            return False, lat, 0, 0, is_429, str(e)
+            is_rl = 1 if ("429" in str(e) or "quota" in str(e).lower()) else 0
+            return False, lat, 0, 0, is_rl, str(e)
 
     t_par_start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(run_one_par, i) for i in range(1, 4)]
         for i, fut in enumerate(futures, 1):
-            ok, lat, inp, out, is_429, text_or_err = fut.result()
+            ok, lat, inp, out, is_rl, text_or_err = fut.result()
             par_lats.append(lat)
             par_inps += inp
             par_outs += out
-            par_429s += is_429
+            par_ratelimits += is_rl
             status = "PASS" if ok else "FAIL"
-            print(f"[Par {i}] {status}: latency={lat:.1f}ms, in={inp}, out={out}, 429={is_429}, resp/err={text_or_err[:60]}")
+            print(f"[Par {i}] {status}: latency={lat:.1f}ms, in={inp}, out={out}, 429={is_rl}, resp/err={text_or_err[:60]}")
 
     par_wall = (time.perf_counter() - t_par_start) * 1000.0
-    print(f"\nSequential avg latency: {sum(seq_lats)/len(seq_lats):.1f}ms | Total tokens: in={seq_inps}, out={seq_outs} | 429s={seq_429s}")
-    print(f"Parallel wall time: {par_wall:.1f}ms | Avg call latency: {sum(par_lats)/len(par_lats):.1f}ms | Total tokens: in={par_inps}, out={par_outs} | 429s={par_429s}")
+    print(f"\nSequential avg latency: {sum(seq_lats)/len(seq_lats):.1f}ms | Total tokens: in={seq_inps}, out={seq_outs} | 429s={seq_ratelimits}")
+    print(f"Parallel wall time: {par_wall:.1f}ms | Avg call latency: {sum(par_lats)/len(par_lats):.1f}ms | Total tokens: in={par_inps}, out={par_outs} | 429s={par_ratelimits}")
 
     # Determine gate values
     agent_id = best_cand
     native_tools = "yes" if candidate_results[best_cand].get("native_tools") else "no"
-    parallel_ok = "yes" if par_429s == 0 and len([l for l in par_lats if l > 0]) == 3 else "no"
+    parallel_ok = "yes" if par_ratelimits == 0 and len([l for l in par_lats if l > 0]) == 3 else "no"
     vision_id = "nvidia/nemotron-3.5-super-vl-120b-a12b" if candidate_results.get("nvidia/nemotron-3.5-super-vl-120b-a12b", {}).get("vision") else "gemini-3.7-flash"
 
     print(f"\nGATE SUMMARY:")
@@ -565,7 +563,7 @@ def main():
     val_parser.add_argument("--sample", action="store_true", help="Validate as sample dataset (32 cases)")
 
     models_parser = subparsers.add_parser("llm-models", help="List available models")
-    models_parser.add_argument("--provider", type=str, default="nim", help="Provider ('nim' or 'gemini')")
+    models_parser.add_argument("--provider", type=str, default=None, help="Provider ('nim' or 'gemini')")
     subparsers.add_parser("extract-png", help="Extract facts from 11 evidence PNG images")
     subparsers.add_parser("llm-smoke", help="Run LLM smoke tests (plain text, tool call, PNG)")
     subparsers.add_parser("llm-ratecheck", help="Run LLM ratecheck benchmark")

@@ -145,12 +145,26 @@ def python_func_to_openai_tool(fn: Callable) -> Dict[str, Any]:
     }
 
 
-def _determine_provider(model: str, explicit_provider: Optional[str] = None, purpose: str = "general") -> str:
+def _determine_provider(
+    model: str,
+    explicit_provider: Optional[str] = None,
+    purpose: str = "general",
+    client: Optional[Any] = None,
+) -> str:
     """Determine whether to use 'gemini' or 'openai_compat' backend."""
+    if client is not None:
+        if hasattr(client, "models"):
+            return "gemini"
+        elif hasattr(client, "chat"):
+            return "openai_compat"
+
     if explicit_provider:
         p = explicit_provider.lower()
         if p in ["openai_compat", "nim", "nvidia", "openai"]:
             return "openai_compat"
+        return "gemini"
+
+    if "gemini" in model.lower():
         return "gemini"
 
     # Check env by purpose
@@ -166,9 +180,8 @@ def _determine_provider(model: str, explicit_provider: Optional[str] = None, pur
 
     if prov and prov.lower() in ["openai_compat", "nim", "nvidia", "openai"]:
         return "openai_compat"
-    if "gemini" in model.lower():
-        return "gemini"
     return "openai_compat"
+
 
 
 def _generate_openai_compat(
@@ -254,8 +267,8 @@ def _generate_openai_compat(
                 continue
 
             # 429 Rate Limit / Quota check
-            is_429 = (status_code == 429) or ("429" in err_msg) or ("rate limit" in err_msg)
-            if is_429:
+            is_ratelimit = (status_code == 429) or ("429" in err_msg) or ("rate limit" in err_msg)
+            if is_ratelimit:
                 if any(q in err_msg for q in ["daily", "quota", "credit", "balance", "insufficient", "exceeded your current quota", "limit: 0"]):
                     raise QuotaExhausted(f"Daily quota or credits exhausted: {e}") from e
 
@@ -356,17 +369,17 @@ def _generate_gemini(
             last_error = e
             msg = str(e).lower()
             code = getattr(e, "code", None)
-            is_429 = (code == 429) or ("429" in msg) or ("resource_exhausted" in msg) or ("quota" in msg)
+            is_ratelimit = (code == 429) or ("429" in msg) or ("resource_exhausted" in msg) or ("quota" in msg)
             is_server = isinstance(e, errors.ServerError) or (isinstance(code, int) and 500 <= code < 600) or any(
                 c in msg for c in ["500", "502", "503", "504"]
             )
 
-            if (is_429 or is_server) and attempt < max_retries:
+            if (is_ratelimit or is_server) and attempt < max_retries:
                 backoff = 1.0 * (2 ** attempt)
                 logger.warning(f"Gemini call error ({e}). Retrying in {backoff:.1f}s...")
                 time.sleep(backoff)
                 continue
-            elif is_429:
+            elif is_ratelimit:
                 raise QuotaExhausted(f"Gemini API rate limit or quota exceeded: {e}") from e
             else:
                 raise e
@@ -407,7 +420,7 @@ def generate(
 ) -> LLMResult:
     """Generate content with Gemini or OpenAI-compatible backend, caching, retries, and ledger tracking."""
     model_name = model or config.get_model_agent()
-    active_provider = _determine_provider(model_name, explicit_provider=provider, purpose=purpose)
+    active_provider = _determine_provider(model_name, explicit_provider=provider, purpose=purpose, client=client)
 
     c_dir = cache_dir or config.CACHE_LLM_DIR
     c_dir.mkdir(parents=True, exist_ok=True)

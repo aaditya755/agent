@@ -227,7 +227,7 @@ class CaseToolEnvironment:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "resource_id": {"type": "string", "description": "Resource identifier e.g. support_001, account_005"}
+                            "resource_id": {"type": "string", "description": "Resource identifier e.g. support_ref, account_ref"}
                         },
                         "required": ["resource_id"],
                     },
@@ -241,7 +241,7 @@ class CaseToolEnvironment:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "file_id": {"type": "string", "description": "Evidence file ID e.g. evidence_01"},
+                            "file_id": {"type": "string", "description": "Evidence file ID e.g. evidence_ref"},
                             "max_chars": {"type": "integer", "description": "Max characters to read (capped at 4000)"},
                         },
                         "required": ["file_id"],

@@ -34,7 +34,7 @@ PNG_CACHE_FILE = config.CACHE_DIR / "png_extractions.json"
 
 
 class ExtractedRecord(BaseModel):
-    resource_id: str = Field(description="Exact resource identifier shown, e.g. account_052, export_1842, support_010, backup_001")
+    resource_id: str = Field(description="Exact resource identifier shown, e.g. account_id, export_id, support_id, backup_id")
     system: Optional[str] = Field(default="", description="Originating system or service name")
     status: Optional[str] = Field(default="", description="State or status shown, e.g. ACTIVE, DELETED, RESTORE_AVAILABLE")
     identifiers: Optional[Dict[str, Any]] = Field(default_factory=dict, description="All visible identifiers: email, user_id, phone, name, etc.")
@@ -168,8 +168,8 @@ def extract_all_pngs() -> Dict[str, Any]:
         default_sys = normalize_system_id(origin)
         topo = detect_topology(origin, p_info["file_path"])
 
-        # Remove existing PNG_PENDING or old PNG_FACT rows for this file
-        cur.execute("DELETE FROM facts WHERE file_id = ? AND kind IN ('PNG_PENDING', 'PNG_FACT')", (fid,))
+        # Remove old PNG_FACT rows for this file (preserve PNG_PENDING)
+        cur.execute("DELETE FROM facts WHERE file_id = ? AND kind = 'PNG_FACT'", (fid,))
 
         records = p_data.get("records", [])
         raw_summary = p_data.get("raw_text_summary", "")[:300]

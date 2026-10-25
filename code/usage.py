@@ -74,7 +74,7 @@ def get_usage_summary(ledger_path: Optional[Path] = None) -> Dict[str, Any]:
                 "output_tokens": 0,
                 "total_tokens": 0,
                 "cache_hits": 0,
-                "cost": "unknown (free tier, prices not set)",
+                "cost": "unknown (prices not set)",
             },
         }
 
@@ -86,7 +86,7 @@ def get_usage_summary(ledger_path: Optional[Path] = None) -> Dict[str, Any]:
         "output_tokens": 0,
         "total_tokens": 0,
         "cache_hits": 0,
-        "cost": "unknown (free tier, prices not set)",
+        "cost": "unknown (prices not set)",
     }
 
     with open(path, "r", encoding="utf-8") as f:
@@ -113,7 +113,7 @@ def get_usage_summary(ledger_path: Optional[Path] = None) -> Dict[str, Any]:
                     "output_tokens": 0,
                     "total_tokens": 0,
                     "cache_hits": 0,
-                    "cost": "unknown (free tier, prices not set)",
+                    "cost": "unknown (prices not set)",
                 }
             per_provider[prov]["calls"] += 1
             per_provider[prov]["input_tokens"] += inp
@@ -130,7 +130,7 @@ def get_usage_summary(ledger_path: Optional[Path] = None) -> Dict[str, Any]:
                     "output_tokens": 0,
                     "total_tokens": 0,
                     "cache_hits": 0,
-                    "cost": "unknown (free tier, prices not set)",
+                    "cost": "unknown (prices not set)",
                 }
 
             per_model[model]["calls"] += 1
