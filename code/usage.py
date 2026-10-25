@@ -27,6 +27,7 @@ def log_usage(
     cache_hit: bool,
     latency_ms: float,
     ledger_path: Optional[Path] = None,
+    provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record one call to the usage ledger.
 
@@ -38,12 +39,14 @@ def log_usage(
         cache_hit: True if served from local disk cache, False if live API call.
         latency_ms: Duration of call or cache retrieval in milliseconds.
         ledger_path: Optional custom path for test isolation.
+        provider: Provider identifier ('openai_compat', 'nim', 'gemini', etc.).
     """
     path = ledger_path or USAGE_LEDGER_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
 
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "provider": provider or ("gemini" if "gemini" in model.lower() else "nim"),
         "purpose": purpose,
         "model": model,
         "input_tokens": int(input_tokens),
@@ -59,10 +62,11 @@ def log_usage(
 
 
 def get_usage_summary(ledger_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Compute per-model and overall usage metrics from the ledger file."""
+    """Compute per-provider, per-model, and overall usage metrics from the ledger file."""
     path = ledger_path or USAGE_LEDGER_PATH
     if not path.exists():
         return {
+            "per_provider": {},
             "per_model": {},
             "overall": {
                 "calls": 0,
@@ -70,10 +74,11 @@ def get_usage_summary(ledger_path: Optional[Path] = None) -> Dict[str, Any]:
                 "output_tokens": 0,
                 "total_tokens": 0,
                 "cache_hits": 0,
-                "cost": "unknown (prices not set)",
+                "cost": "unknown (free tier, prices not set)",
             },
         }
 
+    per_provider: Dict[str, Dict[str, Any]] = {}
     per_model: Dict[str, Dict[str, Any]] = {}
     overall = {
         "calls": 0,
@@ -81,7 +86,7 @@ def get_usage_summary(ledger_path: Optional[Path] = None) -> Dict[str, Any]:
         "output_tokens": 0,
         "total_tokens": 0,
         "cache_hits": 0,
-        "cost": "unknown (prices not set)",
+        "cost": "unknown (free tier, prices not set)",
     }
 
     with open(path, "r", encoding="utf-8") as f:
@@ -94,19 +99,38 @@ def get_usage_summary(ledger_path: Optional[Path] = None) -> Dict[str, Any]:
             except Exception:
                 continue
 
+            prov = rec.get("provider", "gemini" if "gemini" in rec.get("model", "").lower() else "nim")
             model = rec.get("model", "unknown")
             inp = rec.get("input_tokens", 0)
             out = rec.get("output_tokens", 0)
             hit = 1 if rec.get("cache_hit") else 0
 
-            if model not in per_model:
-                per_model[model] = {
+            # Provider aggregation
+            if prov not in per_provider:
+                per_provider[prov] = {
                     "calls": 0,
                     "input_tokens": 0,
                     "output_tokens": 0,
                     "total_tokens": 0,
                     "cache_hits": 0,
-                    "cost": "unknown (prices not set)",
+                    "cost": "unknown (free tier, prices not set)",
+                }
+            per_provider[prov]["calls"] += 1
+            per_provider[prov]["input_tokens"] += inp
+            per_provider[prov]["output_tokens"] += out
+            per_provider[prov]["total_tokens"] += (inp + out)
+            per_provider[prov]["cache_hits"] += hit
+
+            # Model aggregation
+            if model not in per_model:
+                per_model[model] = {
+                    "provider": prov,
+                    "calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "cache_hits": 0,
+                    "cost": "unknown (free tier, prices not set)",
                 }
 
             per_model[model]["calls"] += 1
@@ -122,9 +146,11 @@ def get_usage_summary(ledger_path: Optional[Path] = None) -> Dict[str, Any]:
             overall["cache_hits"] += hit
 
     return {
+        "per_provider": per_provider,
         "per_model": per_model,
         "overall": overall,
     }
+
 
 
 def print_usage_summary(ledger_path: Optional[Path] = None) -> None:

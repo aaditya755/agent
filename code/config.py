@@ -89,30 +89,68 @@ def get_gemini_api_key() -> str:
     return _get_required_env("GEMINI_API_KEY")
 
 
+def get_nvidia_api_key() -> str:
+    """Retrieve NVIDIA_API_KEY from environment. Fails clearly if unset."""
+    return _get_required_env("NVIDIA_API_KEY")
+
+
+def get_provider_agent() -> str:
+    """Retrieve provider for agent (default: openai_compat)."""
+    return os.getenv("LLM_PROVIDER_AGENT", "openai_compat").strip()
+
+
+def get_provider_escalation() -> str:
+    """Retrieve provider for escalation (default: openai_compat)."""
+    return os.getenv("LLM_PROVIDER_ESCALATION", "openai_compat").strip()
+
+
+def get_provider_vision() -> str:
+    """Retrieve provider for vision (default: openai_compat)."""
+    return os.getenv("LLM_PROVIDER_VISION", "openai_compat").strip()
+
+
 def get_model_agent() -> str:
-    """Retrieve GEMINI_MODEL_AGENT from environment. Fails clearly if unset."""
-    return _get_required_env("GEMINI_MODEL_AGENT")
+    """Retrieve agent model name from environment."""
+    val = os.getenv("LLM_MODEL_AGENT") or os.getenv("GEMINI_MODEL_AGENT")
+    if val and val.strip():
+        return val.strip()
+    return "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 def get_model_escalation() -> str:
-    """Retrieve GEMINI_MODEL_ESCALATION from environment. Fails clearly if unset."""
-    return _get_required_env("GEMINI_MODEL_ESCALATION")
+    """Retrieve escalation model name from environment."""
+    val = os.getenv("LLM_MODEL_ESCALATION") or os.getenv("GEMINI_MODEL_ESCALATION")
+    if val and val.strip():
+        return val.strip()
+    return "nvidia/nemotron-3.5-super-vl-120b-a12b"
 
 
 def get_model_vision() -> str:
-    """Retrieve GEMINI_MODEL_VISION from environment. Fails clearly if unset."""
-    return _get_required_env("GEMINI_MODEL_VISION")
+    """Retrieve vision model name from environment."""
+    val = os.getenv("LLM_MODEL_VISION") or os.getenv("GEMINI_MODEL_VISION")
+    if val and val.strip():
+        return val.strip()
+    return "nvidia/nemotron-3.5-super-vl-120b-a12b"
 
 
 def __getattr__(name: str):
     if name == "GEMINI_API_KEY":
         return get_gemini_api_key()
-    elif name == "GEMINI_MODEL_AGENT":
+    elif name == "NVIDIA_API_KEY":
+        return get_nvidia_api_key()
+    elif name == "LLM_PROVIDER_AGENT":
+        return get_provider_agent()
+    elif name == "LLM_PROVIDER_ESCALATION":
+        return get_provider_escalation()
+    elif name == "LLM_PROVIDER_VISION":
+        return get_provider_vision()
+    elif name == "GEMINI_MODEL_AGENT" or name == "LLM_MODEL_AGENT":
         return get_model_agent()
-    elif name == "GEMINI_MODEL_ESCALATION":
+    elif name == "GEMINI_MODEL_ESCALATION" or name == "LLM_MODEL_ESCALATION":
         return get_model_escalation()
-    elif name == "GEMINI_MODEL_VISION":
+    elif name == "GEMINI_MODEL_VISION" or name == "LLM_MODEL_VISION":
         return get_model_vision()
     elif name == "DEFAULT_MODEL":
-        return os.getenv("GEMINI_MODEL_AGENT", "gemini-3.8-flash")
+        return get_model_agent()
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
