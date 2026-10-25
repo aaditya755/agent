@@ -385,58 +385,92 @@ def _populate_evidence_facts(con: sqlite3.Connection):
                                 "result": result,
                                 "subject_reference": subj,
                             }
-                            add_fact(fid, ts or captured_at, s_id, topo, r_id, "HANDOVER_RECORD", json.dumps(rec_dict))
+                            add_fact(fid, captured_at, s_id, topo, r_id, "HANDOVER_RECORD", json.dumps(rec_dict))
 
         elif ext == ".log":
             sys_id = normalize_system_id(origin)
             topo = "log"
             coverage.append((fid, captured_at, sys_id, topo))
             with open(fpath, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    # 1. Check structured JSON log lines
-                    m_json = re.match(r"^(\S+)\s+(\{.*\})$", line)
-                    if m_json:
-                        ts, jstr = m_json.groups()
+                log_lines = f.readlines()
+
+            # Pass 1: collect trace subjects
+            trace_subjects = {}
+            for line in log_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                if "{" in line and "}" in line:
+                    m_j = re.search(r"(\{.*\})", line)
+                    if m_j:
                         try:
-                            jd = json.loads(jstr)
-                            res_id = jd.get("resource_id") or ""
-                            log_sys = jd.get("service") or jd.get("logger") or sys_id
-                            if res_id:
-                                add_fact(fid, ts, log_sys, topo, res_id, "LOG_EVENT", json.dumps(jd))
-                            continue
+                            jd = json.loads(m_j.group(1))
+                            tid = jd.get("trace_id")
+                            subj = jd.get("subject_ref") or jd.get("subject_key") or jd.get("lookup_key") or jd.get("match_key") or jd.get("matched_value") or jd.get("correlation_key")
+                            if tid and subj:
+                                trace_subjects[tid] = subj
                         except Exception:
                             pass
+                kvs = {k: (v1 if v1 != "" else v2) for k, v1, v2 in kv_re.findall(line)}
+                tid = kvs.get("trace_id")
+                subj = kvs.get("subject_ref") or kvs.get("subject_key") or kvs.get("lookup_key") or kvs.get("match_key") or kvs.get("matched_value") or kvs.get("correlation_key")
+                if tid and subj:
+                    trace_subjects[tid] = subj
 
-                    # 2. Check bracketed log lines
-                    m_br = re.match(r"^(\S+)\s+\[(\w+)\]\s+\[([\w\-]+)\]\s+\[([\w\-]+)\]\s+([\w\-]+):\s*(.*)$", line)
-                    if m_br:
-                        ts, level, log_sys, trace_id, event_name, rest = m_br.groups()
-                        kvs = {}
-                        for k, v1, v2 in kv_re.findall(rest):
-                            kvs[k] = v1 if v1 != "" else v2
-                        res_id = kvs.get("resource_id") or ""
+            # Pass 2: emit facts
+            for line in log_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                m_json = re.match(r"^(\S+)\s+(\{.*\})$", line)
+                if m_json:
+                    ts, jstr = m_json.groups()
+                    try:
+                        jd = json.loads(jstr)
+                        jd["event_time"] = ts
+                        tid = jd.get("trace_id")
+                        if tid and tid in trace_subjects and not (jd.get("subject_ref") or jd.get("subject_key")):
+                            jd["subject_ref"] = trace_subjects[tid]
+                        res_id = jd.get("resource_id") or ""
+                        log_sys = jd.get("service") or jd.get("logger") or sys_id
                         if res_id:
-                            kvs["log_level"] = level
-                            kvs["log_system"] = log_sys
-                            kvs["trace_id"] = trace_id
-                            kvs["event_name"] = event_name
-                            add_fact(fid, ts, log_sys, topo, res_id, "LOG_EVENT", json.dumps(kvs))
+                            add_fact(fid, captured_at, log_sys, topo, res_id, "LOG_EVENT", json.dumps(jd))
                         continue
+                    except Exception:
+                        pass
 
-                    # 3. Check unbracketed key=value log lines
-                    m_kv = re.match(r"^(\S+)\s+(.*)$", line)
-                    if m_kv:
-                        ts, rest = m_kv.groups()
-                        kvs = {}
-                        for k, v1, v2 in kv_re.findall(rest):
-                            kvs[k] = v1 if v1 != "" else v2
-                        res_id = kvs.get("resource_id") or ""
-                        log_sys = kvs.get("service") or sys_id
-                        if res_id:
-                            add_fact(fid, ts, log_sys, topo, res_id, "LOG_EVENT", json.dumps(kvs))
+                m_br = re.match(r"^(\S+)\s+\[(\w+)\]\s+\[([\w\-]+)\]\s+\[([\w\-]+)\]\s+([\w\-]+):\s*(.*)$", line)
+                if m_br:
+                    ts, level, log_sys, trace_id, event_name, rest = m_br.groups()
+                    kvs = {}
+                    for k, v1, v2 in kv_re.findall(rest):
+                        kvs[k] = v1 if v1 != "" else v2
+                    res_id = kvs.get("resource_id") or ""
+                    if res_id:
+                        kvs["event_time"] = ts
+                        kvs["log_level"] = level
+                        kvs["log_system"] = log_sys
+                        kvs["trace_id"] = trace_id
+                        kvs["event_name"] = event_name
+                        if trace_id in trace_subjects and not (kvs.get("subject_ref") or kvs.get("subject_key")):
+                            kvs["subject_ref"] = trace_subjects[trace_id]
+                        add_fact(fid, captured_at, log_sys, topo, res_id, "LOG_EVENT", json.dumps(kvs))
+                    continue
+
+                m_kv = re.match(r"^(\S+)\s+(.*)$", line)
+                if m_kv:
+                    ts, rest = m_kv.groups()
+                    kvs = {}
+                    for k, v1, v2 in kv_re.findall(rest):
+                        kvs[k] = v1 if v1 != "" else v2
+                    res_id = kvs.get("resource_id") or ""
+                    log_sys = kvs.get("service") or sys_id
+                    tid = kvs.get("trace_id")
+                    if tid and tid in trace_subjects and not (kvs.get("subject_ref") or kvs.get("subject_key")):
+                        kvs["subject_ref"] = trace_subjects[tid]
+                    if res_id:
+                        kvs["event_time"] = ts
+                        add_fact(fid, captured_at, log_sys, topo, res_id, "LOG_EVENT", json.dumps(kvs))
 
         elif ext == ".pdf":
             sys_id = normalize_system_id(origin)
@@ -481,8 +515,13 @@ def _populate_evidence_facts(con: sqlite3.Connection):
 
             # Extract support message references in attachments (evidence_58)
             supp_matches = set(re.findall(r"(support_\d+)", full_text))
+            email_m = re.search(r"[\w\.-]+@[\w\.-]+", full_text)
+            pdf_email = email_m.group(0).lower() if email_m else None
             for sm in supp_matches:
-                add_fact(fid, captured_at, "support_platform", topo, sm, "PDF_RECORD", json.dumps({"text_extract": full_text[:500]}))
+                add_fact(fid, captured_at, "support_platform", topo, sm, "PDF_RECORD", json.dumps({
+                    "text_extract": full_text[:500],
+                    "email": pdf_email,
+                }))
 
     cur.executemany(
         "INSERT INTO facts (file_id, captured_at, system_id, topology, resource_id, kind, fields_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
