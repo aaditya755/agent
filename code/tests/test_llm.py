@@ -175,3 +175,74 @@ def test_usage_summary(tmp_path):
     assert summary["per_model"]["model-alpha"]["calls"] == 2
     assert summary["per_model"]["model-alpha"]["cache_hits"] == 1
     assert summary["per_model"]["model-beta"]["calls"] == 1
+
+
+def test_validator_unlinked_complete_exemption():
+    """Verify validator exempts COMPLETE cases with 0 steps when flagged account_unlinked."""
+    import validator
+
+    # Without exemption: empty steps on COMPLETE fails
+    errors_normal = validator.validate_steps("case_999", "COMPLETE", [], account_unlinked=False)
+    assert len(errors_normal) == 1
+    assert "cannot have empty steps_json" in errors_normal[0]
+
+    # With exemption: empty steps on COMPLETE passes
+    errors_exempt = validator.validate_steps("case_999", "COMPLETE", [], account_unlinked=True)
+    assert len(errors_exempt) == 0
+
+    # Non-COMPLETE statuses (like INCOMPLETE) still fail even if account_unlinked
+    errors_incomplete = validator.validate_steps("case_999", "INCOMPLETE", [], account_unlinked=True)
+    assert len(errors_incomplete) == 1
+    assert "cannot have empty steps_json" in errors_incomplete[0]
+
+
+def test_llm_models_requires_only_api_key(monkeypatch):
+    """Verify llm-models command only requires GEMINI_API_KEY, not model names."""
+    import main
+
+    # Ensure model names are not required
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_test")
+    monkeypatch.delenv("GEMINI_MODEL_AGENT", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL_ESCALATION", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL_VISION", raising=False)
+
+    fake_model = MagicMock()
+    fake_model.name = "models/gemini-test"
+    fake_model.supported_actions = ["generateContent"]
+
+    fake_client = MagicMock()
+    fake_client.models.list.return_value = [fake_model]
+
+    with patch("llm.get_client", return_value=fake_client):
+        # Should not raise any missing env var error for model names
+        main.cmd_llm_models()
+
+
+def test_cmd_llm_ratecheck_mock(monkeypatch, capsys):
+    """Verify cmd_llm_ratecheck runs and prints summary with mock LLM calls."""
+    import main
+
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key")
+    monkeypatch.setenv("GEMINI_MODEL_AGENT", "gemini-test-agent")
+    monkeypatch.setenv("GEMINI_MODEL_ESCALATION", "gemini-test-esc")
+
+    mock_resp = llm.LLMResult(
+        text="PONG",
+        input_tokens=5,
+        output_tokens=2,
+        cache_hit=False,
+        latency_ms=10.0,
+    )
+
+    with patch("llm.generate", return_value=mock_resp), \
+         patch("usage.print_usage_summary", return_value=None):
+        main.cmd_llm_ratecheck()
+
+    captured = capsys.readouterr().out
+    assert "=== BATCH 1: 10 Sequential Calls" in captured
+    assert "=== BATCH 2: 4 Parallel Calls" in captured
+    assert "=== BATCH 3: 2 Sequential Calls" in captured
+    assert "=== RATECHECK SUMMARY ===" in captured
+    assert "Total Calls: 16" in captured
+    assert "Successes: 16" in captured
+

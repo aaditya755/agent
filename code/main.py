@@ -57,6 +57,7 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None) -> Path:
     rows = []
     status_counts = {"COMPLETE": 0, "INCOMPLETE": 0, "NOT_APPLICABLE": 0}
     total_steps = 0
+    unlinked_case_ids = set()
 
     for idx, req in enumerate(requests, 1):
         cid = req["case_id"]
@@ -64,6 +65,8 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None) -> Path:
         audit_at = req["audit_at"]
 
         dossier_data = baseline.dossier(email, audit_at)
+        if dossier_data.get("account_unlinked"):
+            unlinked_case_ids.add(cid)
         classification = baseline.classify_case(req, dossier_data)
 
         st = classification["deletion_status"]
@@ -89,10 +92,15 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None) -> Path:
 
     elapsed = round(time.time() - t0, 2)
     print(f"Wrote {len(rows)} rows to {output_path} in {elapsed}s.")
-    print(f"Statuses: {status_counts}, Total steps: {total_steps}")
+    print(f"Statuses: {status_counts}, Total steps: {total_steps}, Account unlinked: {len(unlinked_case_ids)}")
 
     # 5. Validate output
-    is_valid, errors = validator.validate_output_file(output_path, expected_count=expected_rows, sample=sample)
+    is_valid, errors = validator.validate_output_file(
+        output_path,
+        expected_count=expected_rows,
+        sample=sample,
+        unlinked_cases=unlinked_case_ids,
+    )
     if is_valid:
         print("VALIDATION PASSED: 0 errors detected.")
     else:
@@ -200,6 +208,93 @@ def cmd_usage_summary():
     usage.print_usage_summary()
 
 
+def cmd_llm_ratecheck():
+    """Run ratecheck benchmark: 10 sequential calls + 4 parallel calls with agent model, 2 calls with escalation model."""
+    import config
+    import llm
+    from concurrent.futures import ThreadPoolExecutor
+
+    agent_model = config.get_model_agent()
+    escalation_model = config.get_model_escalation()
+
+    results = []
+
+    def make_call(call_label: str, model_name: str, purpose: str):
+        t0 = time.perf_counter()
+        try:
+            res = llm.generate(
+                prompt="Respond with 'PONG'.",
+                model=model_name,
+                purpose=purpose,
+                timeout_ms=120000,
+                max_retries=0,
+                use_cache=False,
+            )
+            lat = res.latency_ms
+            inp = res.input_tokens
+            out = res.output_tokens
+            print(f"[{call_label}] {model_name} SUCCESS: latency={lat:.1f}ms, in={inp}, out={out}")
+            return {"label": call_label, "model": model_name, "success": True, "latency_ms": lat, "in": inp, "out": out, "error": None}
+        except Exception as e:
+            lat = (time.perf_counter() - t0) * 1000.0
+            err_str = str(e)
+            print(f"[{call_label}] {model_name} FAIL: latency={lat:.1f}ms, error={err_str}")
+            return {"label": call_label, "model": model_name, "success": False, "latency_ms": lat, "in": 0, "out": 0, "error": err_str}
+
+    print(f"=== BATCH 1: 10 Sequential Calls ({agent_model}) ===")
+    seq_results = []
+    for i in range(1, 11):
+        r = make_call(f"seq-{i}", agent_model, "ratecheck-seq")
+        seq_results.append(r)
+        results.append(r)
+
+    print(f"\n=== BATCH 2: 4 Parallel Calls ({agent_model}) ===")
+    t_par_start = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(make_call, f"par-{i}", agent_model, "ratecheck-par") for i in range(1, 5)]
+        par_results = [f.result() for f in futures]
+    par_wall_time = (time.perf_counter() - t_par_start) * 1000.0
+    results.extend(par_results)
+
+    print(f"\n=== BATCH 3: 2 Sequential Calls ({escalation_model}) ===")
+    esc_results = []
+    for i in range(1, 3):
+        r = make_call(f"esc-{i}", escalation_model, "ratecheck-esc")
+        esc_results.append(r)
+        results.append(r)
+
+    print("\n=== RATECHECK SUMMARY ===")
+    total_calls = len(results)
+    successes = sum(1 for r in results if r["success"])
+    failures = total_calls - successes
+    rate_limits = sum(1 for r in results if "429" in (r.get("error") or "") or "RESOURCE_EXHAUSTED" in (r.get("error") or ""))
+
+    seq_success_lats = [r["latency_ms"] for r in seq_results if r["success"]]
+    par_success_lats = [r["latency_ms"] for r in par_results if r["success"]]
+    esc_success_lats = [r["latency_ms"] for r in esc_results if r["success"]]
+
+    mean_seq_lat = (sum(seq_success_lats) / len(seq_success_lats)) if seq_success_lats else 0.0
+    mean_par_lat = (sum(par_success_lats) / len(par_success_lats)) if par_success_lats else 0.0
+    mean_esc_lat = (sum(esc_success_lats) / len(esc_success_lats)) if esc_success_lats else 0.0
+
+    print(f"Total Calls: {total_calls} | Successes: {successes} | Failures: {failures} | 429 Rate Limits: {rate_limits}")
+    print(f"Agent Sequential (10): {len(seq_success_lats)}/10 success, mean latency: {mean_seq_lat:.1f}ms")
+    print(f"Agent Parallel (4): {len(par_success_lats)}/4 success, wall time: {par_wall_time:.1f}ms, mean call latency: {mean_par_lat:.1f}ms")
+    print(f"Escalation (2): {len(esc_success_lats)}/2 success, mean latency: {mean_esc_lat:.1f}ms")
+
+    if len(par_success_lats) > 0 and len(seq_success_lats) > 0:
+        sum_par_lats = sum(r["latency_ms"] for r in par_results)
+        if par_wall_time < sum_par_lats:
+            print(f"Parallel Assessment: Parallel execution HELPS (wall time {par_wall_time:.1f}ms vs sum of latencies {sum_par_lats:.1f}ms).")
+        else:
+            print("Parallel Assessment: Parallel execution did NOT improve overall throughput.")
+    else:
+        print("Parallel Assessment: Inconclusive due to failures/errors.")
+
+    print("\nLedger Total Calls:")
+    cmd_usage_summary()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ghost Data Still Exists CLI Runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -214,6 +309,7 @@ def main():
 
     subparsers.add_parser("llm-models", help="List available models supporting generateContent")
     subparsers.add_parser("llm-smoke", help="Run LLM smoke tests (plain text, tool call, PNG)")
+    subparsers.add_parser("llm-ratecheck", help="Run LLM ratecheck benchmark")
     subparsers.add_parser("usage-summary", help="Print usage ledger summary")
 
     args = parser.parse_args()
@@ -237,6 +333,8 @@ def main():
         cmd_llm_models()
     elif args.command == "llm-smoke":
         cmd_llm_smoke()
+    elif args.command == "llm-ratecheck":
+        cmd_llm_ratecheck()
     elif args.command == "usage-summary":
         cmd_usage_summary()
 

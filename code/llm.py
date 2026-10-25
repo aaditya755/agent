@@ -127,6 +127,7 @@ def generate(
     temperature: float = 0.0,
     timeout_ms: int = 60000,
     max_retries: int = 3,
+    use_cache: bool = True,
     client: Optional[Any] = None,
     cache_dir: Optional[Path] = None,
     ledger_path: Optional[Path] = None,
@@ -144,6 +145,7 @@ def generate(
         temperature: Temperature setting (fixed at 0.0).
         timeout_ms: Request timeout in milliseconds (default: 60000).
         max_retries: Max retries for 429 and 5xx errors (default: 3).
+        use_cache: Whether to use disk cache (default: True).
         client: Optional pre-configured genai Client (useful for tests/mocking).
         cache_dir: Optional custom cache directory.
         ledger_path: Optional custom usage ledger file path.
@@ -164,7 +166,7 @@ def generate(
     t0 = time.perf_counter()
 
     # Check disk cache
-    if cache_file.exists():
+    if use_cache and cache_file.exists():
         try:
             cached_data = json.loads(cache_file.read_text(encoding="utf-8"))
             latency_ms = (time.perf_counter() - t0) * 1000.0
@@ -264,13 +266,14 @@ def generate(
         out_tokens = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
 
     # Write to disk cache
-    cache_payload = {
-        "text": resp_text,
-        "function_calls": [{"name": fc.name, "args": fc.args} for fc in fcs],
-        "input_tokens": inp_tokens,
-        "output_tokens": out_tokens,
-    }
-    cache_file.write_text(json.dumps(cache_payload, indent=2), encoding="utf-8")
+    if use_cache:
+        cache_payload = {
+            "text": resp_text,
+            "function_calls": [{"name": fc.name, "args": fc.args} for fc in fcs],
+            "input_tokens": inp_tokens,
+            "output_tokens": out_tokens,
+        }
+        cache_file.write_text(json.dumps(cache_payload, indent=2), encoding="utf-8")
 
     # Record in usage ledger
     usage.log_usage(

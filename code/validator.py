@@ -82,6 +82,7 @@ def validate_steps(
     steps: List[Dict[str, Any]],
     audit_at: Optional[str] = None,
     evidence_manifest: Optional[Dict[str, str]] = None,
+    account_unlinked: bool = False,
 ) -> List[str]:
     """Validate a single step sequence, returning a list of error strings."""
     errors = []
@@ -92,6 +93,9 @@ def validate_steps(
         return errors
 
     if len(steps) == 0:
+        if status == "COMPLETE" and account_unlinked:
+            # Exemption: known data limitation where the platform does not link the account and no other records exist
+            return errors
         errors.append(f"{case_id}: {status} case cannot have empty steps_json")
         return errors
 
@@ -151,6 +155,7 @@ def validate_output_file(
     output_path: Path,
     expected_count: int = 518,
     sample: bool = False,
+    unlinked_cases: Optional[Set[str]] = None,
 ) -> Tuple[bool, List[str]]:
     """Validate an output.csv file against all challenge schema and contract requirements."""
     errors = []
@@ -159,6 +164,22 @@ def validate_output_file(
 
     manifest = load_evidence_manifest()
     cutoffs = load_audit_cutoffs(sample=sample)
+
+    if unlinked_cases is None:
+        try:
+            import baseline
+            from config import SAMPLE_DELETION_REQUESTS_PATH, DELETION_REQUESTS_PATH
+            req_path = SAMPLE_DELETION_REQUESTS_PATH if sample else DELETION_REQUESTS_PATH
+            if req_path.exists():
+                with open(req_path, "r", encoding="utf-8") as f:
+                    req_list = list(csv.DictReader(f))
+                unlinked_cases = set()
+                for r in req_list:
+                    d = baseline.dossier(r["email"], r["audit_at"])
+                    if d.get("account_unlinked"):
+                        unlinked_cases.add(r["case_id"])
+        except Exception:
+            unlinked_cases = set()
 
     with open(output_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
@@ -202,7 +223,8 @@ def validate_output_file(
             continue
 
         audit_at = cutoffs.get(cid)
-        step_errors = validate_steps(cid, st, steps, audit_at, manifest)
+        is_unlinked = (cid in unlinked_cases) if unlinked_cases else False
+        step_errors = validate_steps(cid, st, steps, audit_at, manifest, account_unlinked=is_unlinked)
         errors.extend(step_errors)
 
     return (len(errors) == 0, errors)

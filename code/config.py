@@ -113,4 +113,6 @@ def __getattr__(name: str):
         return get_model_escalation()
     elif name == "GEMINI_MODEL_VISION":
         return get_model_vision()
+    elif name == "DEFAULT_MODEL":
+        return os.getenv("GEMINI_MODEL_AGENT", "gemini-3.8-flash")
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

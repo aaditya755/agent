@@ -149,39 +149,37 @@ def dossier(email: str, audit_at: str, db_path: Optional[Path] = None) -> Dict[s
         )
         for a in cur.fetchall():
             dt = a["details_json"]
-            if any(ident in dt for ident in id_strings):
-                acc_id = a["resource_id"]
-                break
+            try:
+                jd = json.loads(dt)
+                if _search_json_identifiers(jd, id_strings):
+                    acc_id = a["resource_id"]
+                    break
+            except Exception:
+                if any(ident in dt for ident in id_strings):
+                    acc_id = a["resource_id"]
+                    break
 
     if not acc_id:
         # Check activity details mentioning user identifiers
         for ident in id_strings:
             cur.execute(
-                "SELECT resource_id FROM system_activity WHERE resource_id LIKE 'account_%' AND details_json LIKE ? AND event_time <= ?",
+                "SELECT resource_id, details_json FROM system_activity WHERE resource_id LIKE 'account_%' AND details_json LIKE ? AND event_time <= ?",
                 (f"%{ident}%", audit_at),
             )
-            row = cur.fetchone()
-            if row:
-                acc_id = row[0]
+            for row in cur.fetchall():
+                try:
+                    jd = json.loads(row[1])
+                    if _search_json_identifiers(jd, id_strings):
+                        acc_id = row[0]
+                        break
+                except Exception:
+                    pass
+            if acc_id:
                 break
 
-    if not acc_id:
-        # Fallback to latest deletion_worker activity <= audit_at
-        cur.execute(
-            """
-            SELECT resource_id FROM system_activity
-            WHERE source_system = 'deletion_worker' AND target_system = 'account_service'
-              AND event_time <= ?
-            ORDER BY event_time DESC LIMIT 1
-            """,
-            (audit_at,),
-        )
-        row = cur.fetchone()
-        if row:
-            acc_id = row[0]
-
-    if not acc_id:
-        acc_id = "unresolved"
+    # If not data-linked, do NOT fall back to ungrounded deletion_worker time-window events.
+    # acc_id remains empty and account_unlinked is flagged.
+    account_unlinked = (not acc_id)
 
     # 3. Check LINK_RESOURCE_IDENTITY activities <= audit_at
     cur.execute(
@@ -226,7 +224,8 @@ def dossier(email: str, audit_at: str, db_path: Optional[Path] = None) -> Dict[s
     return {
         "subject_ref": uid,
         "bag": bag,
-        "account_id": acc_id,
+        "account_id": acc_id if acc_id else None,
+        "account_unlinked": account_unlinked,
         "resources": case_facts,
         "activities": user_activities,
         "support_ambiguous": support_ambiguous,
