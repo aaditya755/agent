@@ -32,8 +32,9 @@ import steps
 import validator
 
 
-def run_audit(sample: bool = False, output_path: Optional[Path] = None) -> Path:
+def run_audit(sample: bool = False, output_path: Optional[Path] = None, use_agent: bool = False) -> Path:
     """Execute full audit pipeline across all cases and write output.csv."""
+    from concurrent.futures import ThreadPoolExecutor
     t0 = time.time()
     if output_path is None:
         output_path = OUTPUT_PATH
@@ -41,7 +42,7 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None) -> Path:
     input_path = SAMPLE_DELETION_REQUESTS_PATH if sample else DELETION_REQUESTS_PATH
     expected_rows = 32 if sample else 518
 
-    print(f"Starting audit run: input={input_path.name}, target={output_path.name}, expected={expected_rows} cases")
+    print(f"Starting audit run: input={input_path.name}, target={output_path.name}, expected={expected_rows} cases, agent={use_agent}")
 
     # 1. Ensure facts store is ready
     facts.ensure_facts_store()
@@ -53,35 +54,117 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None) -> Path:
     # Numerical sorting of requests
     requests.sort(key=lambda r: int(r["case_id"].split("_")[1]) if "_" in r["case_id"] else 0)
 
-    # 3. Process requests
+    # Pre-compute baseline dossier and classify for all requests
+    req_dossiers = {}
+    req_classifications = {}
+    unlinked_case_ids = set()
+
+    for req in requests:
+        cid = req["case_id"]
+        d = baseline.dossier(req["email"], req["audit_at"])
+        req_dossiers[cid] = d
+        if d.get("account_unlinked"):
+            unlinked_case_ids.add(cid)
+        req_classifications[cid] = baseline.classify_case(req, d)
+
+    flagged_cids = set()
+    agent_results = {}
+
+    if use_agent:
+        import agent
+        png_fids = {
+            "evidence_04", "evidence_09", "evidence_14", "evidence_19",
+            "evidence_23", "evidence_28", "evidence_32", "evidence_37",
+            "evidence_42", "evidence_46", "evidence_60",
+        }
+        cat1_cases = []  # CLASSIFY_REQUEST or text intent signal
+        cat2_cases = []  # support_ambiguous
+        cat3_cases = []  # PNG-only cases
+        cat4_cases = []  # validator warning / unlinked account
+
+        for req in requests:
+            cid = req["case_id"]
+            d = req_dossiers[cid]
+            is_non, has_evt, has_pat = baseline.is_non_deletion_request(req["request_text"], d.get("activities", []))
+            if has_evt or has_pat:
+                cat1_cases.append(req)
+            elif any(rid.startswith("support_") for rid in d.get("resources", {}).keys()):
+                cat2_cases.append(req)
+            elif any(any(f.get("file_id") in png_fids for f in flist) for flist in d.get("resources", {}).values()):
+                cat3_cases.append(req)
+            elif d.get("account_unlinked"):
+                cat4_cases.append(req)
+
+        total_flagged_count = len(cat1_cases) + len(cat2_cases) + len(cat3_cases) + len(cat4_cases)
+        print(f"\n--- AGENT SCOPE EVALUATION ---")
+        print(f"Total flagged count across all categories: {total_flagged_count}")
+        print(f"  * Cat 1 (Intent/CLASSIFY): {len(cat1_cases)}")
+        print(f"  * Cat 2 (Support ambiguous): {len(cat2_cases)}")
+        print(f"  * Cat 3 (PNG evidence): {len(cat3_cases)}")
+        print(f"  * Cat 4 (Unlinked/warnings): {len(cat4_cases)}")
+
+        if total_flagged_count > 80:
+            print(f"Flagged count ({total_flagged_count}) exceeds 80: taking first three categories up to 40 cases.")
+            target_flagged = cat1_cases + cat3_cases
+            needed = 40 - len(target_flagged)
+            target_flagged += cat2_cases[:max(0, needed)]
+        else:
+            target_flagged = cat1_cases + cat3_cases + cat2_cases[:20]
+
+        flagged_cids = {r["case_id"] for r in target_flagged}
+        print(f"Running agent on {len(flagged_cids)} flagged cases with concurrency 3...")
+
+        def _run_agent_case(r):
+            cid = r["case_id"]
+            return agent.run_single_agent(
+                r,
+                dossier_data=req_dossiers[cid],
+                baseline_classification=req_classifications[cid],
+            )
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            fut_results = list(executor.map(_run_agent_case, target_flagged))
+            for a_res in fut_results:
+                agent_results[a_res["case_id"]] = a_res
+
+    # 3. Assemble final outputs
     rows = []
     status_counts = {"COMPLETE": 0, "INCOMPLETE": 0, "NOT_APPLICABLE": 0}
     total_steps = 0
-    unlinked_case_ids = set()
+    total_in_toks = 0
+    total_out_toks = 0
+    total_fallbacks = 0
+    disagreements = []
+    status_changes = []
 
-    for idx, req in enumerate(requests, 1):
+    for req in requests:
         cid = req["case_id"]
-        email = req["email"]
-        audit_at = req["audit_at"]
+        base_cl = req_classifications[cid]
+        base_st = base_cl["deletion_status"]
+        base_stps = base_cl.get("all_steps", [])
 
-        dossier_data = baseline.dossier(email, audit_at)
-        if dossier_data.get("account_unlinked"):
-            unlinked_case_ids.add(cid)
-        classification = baseline.classify_case(req, dossier_data)
+        if cid in agent_results:
+            a_res = agent_results[cid]
+            total_in_toks += a_res.get("input_tokens", 0)
+            total_out_toks += a_res.get("output_tokens", 0)
+            if a_res.get("fallback"):
+                total_fallbacks += 1
+            if a_res.get("disagreement"):
+                disagreements.append(a_res)
 
-        st = classification["deletion_status"]
+            st = a_res["deletion_status"]
+            all_steps = a_res.get("all_steps", [])
+            if st != base_st:
+                status_changes.append((cid, base_st, st))
+        else:
+            st = base_st
+            all_steps = base_stps
+
         status_counts[st] = status_counts.get(st, 0) + 1
-
-        all_steps = classification.get("all_steps", [])
         sorted_steps = steps.sort_steps(all_steps)
         total_steps += len(sorted_steps)
-
         serialized_steps = steps.serialize_steps(sorted_steps) if st != "NOT_APPLICABLE" else "[]"
-
         rows.append((cid, st, serialized_steps))
-
-        if idx % 100 == 0 or idx == len(requests):
-            print(f"Processed {idx}/{len(requests)} cases...")
 
     # 4. Write output.csv
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,8 +174,19 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None) -> Path:
         writer.writerows(rows)
 
     elapsed = round(time.time() - t0, 2)
-    print(f"Wrote {len(rows)} rows to {output_path} in {elapsed}s.")
+    print(f"\nWrote {len(rows)} rows to {output_path} in {elapsed}s.")
     print(f"Statuses: {status_counts}, Total steps: {total_steps}, Account unlinked: {len(unlinked_case_ids)}")
+
+    if use_agent:
+        print(f"\n--- AGENT EXECUTION SUMMARY ---")
+        print(f"Flagged Count: {len(flagged_cids)}")
+        print(f"Total Agent Calls / Dispatches: {len(agent_results)}")
+        print(f"Total Tokens: input={total_in_toks}, output={total_out_toks}, total={total_in_toks + total_out_toks}")
+        print(f"Fallbacks to Baseline: {total_fallbacks}")
+        print(f"Status Changes vs Baseline: {len(status_changes)} {status_changes[:5]}")
+        print(f"Agent-Baseline Disagreements ({len(disagreements)} total):")
+        for d_item in disagreements[:3]:
+            print(f"  * Case {d_item['case_id']}: verdict={d_item.get('agent_verdicts')}, fallback={d_item.get('fallback')}, reason={d_item.get('fallback_reason')}")
 
     # 5. Validate output
     is_valid, errors = validator.validate_output_file(
@@ -109,6 +203,7 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None) -> Path:
             print(f"  * {err}")
 
     return output_path
+
 
 
 def cmd_llm_models(provider: str = "nim"):
@@ -462,6 +557,7 @@ def main():
 
     run_parser = subparsers.add_parser("run", help="Run deletion audit pipeline")
     run_parser.add_argument("--sample", action="store_true", help="Run on 32 sample cases")
+    run_parser.add_argument("--agent", action="store_true", help="Run tool-calling agent on flagged cases")
     run_parser.add_argument("--output", type=str, default=None, help="Custom output CSV path")
 
     val_parser = subparsers.add_parser("validate", help="Validate output CSV")
@@ -479,7 +575,7 @@ def main():
 
     if args.command == "run":
         out_p = Path(args.output) if args.output else OUTPUT_PATH
-        run_audit(sample=args.sample, output_path=out_p)
+        run_audit(sample=args.sample, output_path=out_p, use_agent=args.agent)
     elif args.command == "validate":
         f_p = Path(args.file)
         exp = 32 if args.sample else 518
