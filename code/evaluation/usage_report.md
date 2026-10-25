@@ -10,7 +10,7 @@
 | Metric | Value |
 |---|---|
 | Model Provider | Google DeepMind / Local Deterministic Engine |
-| Runtime Model | gemini-3.8-flash (Rules Engine Phase) |
+| Runtime Model | nvidia/nemotron-3.5-super-vl-120b-a12b (Rules Engine Phase) |
 | Total Model Calls | 0 (Deterministic facts store + rule engine pass) |
 | Input Tokens | 0 |
 | Output Tokens | 0 |

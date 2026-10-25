@@ -470,6 +470,7 @@ def main():
 
     models_parser = subparsers.add_parser("llm-models", help="List available models")
     models_parser.add_argument("--provider", type=str, default="nim", help="Provider ('nim' or 'gemini')")
+    subparsers.add_parser("extract-png", help="Extract facts from 11 evidence PNG images")
     subparsers.add_parser("llm-smoke", help="Run LLM smoke tests (plain text, tool call, PNG)")
     subparsers.add_parser("llm-ratecheck", help="Run LLM ratecheck benchmark")
     subparsers.add_parser("usage-summary", help="Print usage ledger summary")
@@ -493,6 +494,9 @@ def main():
             sys.exit(1)
     elif args.command == "llm-models":
         cmd_llm_models(provider=args.provider)
+    elif args.command == "extract-png":
+        import extract_png
+        extract_png.extract_all_pngs()
     elif args.command == "llm-smoke":
         cmd_llm_smoke()
     elif args.command == "llm-ratecheck":
