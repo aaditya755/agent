@@ -122,7 +122,7 @@ def test_no_hardcoded_literals_in_solution_logic():
     from pathlib import Path
 
     code_path = Path(__file__).resolve().parents[1]
-    prohibited_pattern = re.compile(r"c_num|case_\d+|evidence_\d+|[a-z]+_\d{3,}")
+    prohibited_pattern = re.compile(r"c_num|case_\d+|evidence_\d+|[a-z]+_\d{3,}|[a-z]+_\{")
 
     for py_file in code_path.glob("*.py"):
         text = py_file.read_text(encoding="utf-8")

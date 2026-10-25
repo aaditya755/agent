@@ -10,21 +10,21 @@
 
 ## 2. Step-Level and Field-Level Accuracy
 - **Step-Level Metrics**:
-  - **Precision**: 72.9%
-  - **Recall**: 64.2%
-  - **F1 Score**: 68.3%
-  - **Total Predicted Steps**: 170
+  - **Precision**: 75.7%
+  - **Recall**: 67.9%
+  - **F1 Score**: 71.6%
+  - **Total Predicted Steps**: 173
   - **Total Ground-Truth Steps**: 193
 - **Field-Level Accuracy**:
-  - `phase`: 94.7%
-  - `operation`: 78.2%
-  - `system_id`: 82.4%
-  - `resource_id`: 77.1%
-  - `state`: 80.0%
-  - `evidence_id`: 96.5%
+  - `phase`: 96.5%
+  - `operation`: 85.0%
+  - `system_id`: 87.3%
+  - `resource_id`: 78.0%
+  - `state`: 86.1%
+  - `evidence_id`: 97.1%
 
 ## 3. Sequence Accuracy
-- **Exact Step Sequence Accuracy**: 37.5% (12/32 cases)
+- **Exact Step Sequence Accuracy**: 28.1% (9/32 cases)
 - **Sorting Validation**: 100% adherence to canonical 4-tier sort hierarchy (phase_rank < operation_rank < system_id < resource_id) and consecutive step numbering starting at 1.
 
 ## 4. Participant-Created Custom Evaluation Cases

@@ -141,26 +141,47 @@ def dossier(email: str, audit_at: str, db_path: Optional[Path] = None) -> Dict[s
             except Exception:
                 pass
 
-    if not acc_id and uid:
-        m_u = re.match(r"^user_0*(\d+)$", uid)
-        if m_u:
-            acc_id = f"account_{int(m_u.group(1)):03d}"
-        else:
+    if not acc_id:
+        # Check LINK_RESOURCE_IDENTITY <= audit_at
+        cur.execute(
+            "SELECT resource_id, details_json FROM system_activity WHERE event_type = 'LINK_RESOURCE_IDENTITY' AND target_system = 'account_service' AND event_time <= ?",
+            (audit_at,),
+        )
+        for a in cur.fetchall():
+            dt = a["details_json"]
+            if any(ident in dt for ident in id_strings):
+                acc_id = a["resource_id"]
+                break
+
+    if not acc_id:
+        # Check activity details mentioning user identifiers
+        for ident in id_strings:
             cur.execute(
-                """
-                SELECT resource_id FROM system_activity
-                WHERE source_system = 'deletion_worker' AND target_system = 'account_service'
-                  AND event_time <= ?
-                ORDER BY event_time DESC LIMIT 1
-                """,
-                (audit_at,),
+                "SELECT resource_id FROM system_activity WHERE resource_id LIKE 'account_%' AND details_json LIKE ? AND event_time <= ?",
+                (f"%{ident}%", audit_at),
             )
             row = cur.fetchone()
             if row:
                 acc_id = row[0]
-            elif uid:
-                num_part = uid.split("_")[1] if "_" in uid else "001"
-                acc_id = f"account_{num_part}"
+                break
+
+    if not acc_id:
+        # Fallback to latest deletion_worker activity <= audit_at
+        cur.execute(
+            """
+            SELECT resource_id FROM system_activity
+            WHERE source_system = 'deletion_worker' AND target_system = 'account_service'
+              AND event_time <= ?
+            ORDER BY event_time DESC LIMIT 1
+            """,
+            (audit_at,),
+        )
+        row = cur.fetchone()
+        if row:
+            acc_id = row[0]
+
+    if not acc_id:
+        acc_id = "unresolved"
 
     # 3. Check LINK_RESOURCE_IDENTITY activities <= audit_at
     cur.execute(
@@ -185,12 +206,30 @@ def dossier(email: str, audit_at: str, db_path: Optional[Path] = None) -> Dict[s
     )
     user_activities = [dict(r) for r in cur.fetchall()]
 
+    support_ambiguous = False
+    for rid, f_list in case_facts.items():
+        if rid.startswith("support_"):
+            for f in f_list:
+                try:
+                    fj = json.loads(f["fields_json"])
+                    email = fj.get("requester_email") or fj.get("email")
+                    phone = fj.get("requester_phone") or fj.get("phone")
+                    email_hash = fj.get("email_hash")
+                    name = fj.get("requester_name") or fj.get("name")
+                    excerpt = fj.get("message_excerpt") or fj.get("text_extract") or fj.get("message_text")
+                    if (name or excerpt) and not (email or phone or email_hash):
+                        support_ambiguous = True
+                        break
+                except Exception:
+                    pass
+
     return {
         "subject_ref": uid,
         "bag": bag,
         "account_id": acc_id,
         "resources": case_facts,
         "activities": user_activities,
+        "support_ambiguous": support_ambiguous,
     }
 
 
@@ -259,6 +298,9 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
         flag = f"NOT_APPLICABLE mismatch: has_event={has_event}, has_pattern={has_pattern}"
         review_flags.append(flag)
 
+    if dossier_data.get("support_ambiguous"):
+        review_flags.append("support_ambiguous")
+
     bag = dossier_data["bag"]
     id_strings = {bag.user_id} | set(bag.emails) | set(bag.phones) | set(bag.email_hashes)
     id_strings.discard("")
@@ -277,7 +319,7 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
 
     # Check primary account state in replica <= audit_at
     acc_is_active = False
-    if acc_id:
+    if acc_id and acc_id != "unresolved":
         cur.execute(
             """
             SELECT file_id, fields_json FROM facts
@@ -309,7 +351,7 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
             except Exception:
                 acc_is_active = False
 
-    if acc_is_active and acc_id:
+    if acc_is_active and acc_id and acc_id != "unresolved":
         ev_id = cite(acc_id, audit_at, "account_service", False, db_path)
         findings.append({
             "step_no": 0,
@@ -392,6 +434,8 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
             txt = jd.get("message_text") or jd.get("text_extract") or jd.get("message_excerpt") or ""
             is_att = (
                 "attachment" in f["kind"].lower()
+                or f.get("topology") == "document"
+                or f.get("kind") == "PDF_RECORD"
                 or jd.get("record_type") == "SUPPORT_ATTACHMENT"
                 or jd.get("collection_name") == "support_attachments"
                 or jd.get("marker_found") == "false"
@@ -510,7 +554,8 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
 
         elif rid.startswith("data_flow_"):
             enabled = jd.get("enabled")
-            if enabled in (True, 1, "1") or str(enabled).lower() in ("true", "1"):
+            res_val = jd.get("result")
+            if enabled in (True, 1, "1") or str(enabled).lower() in ("true", "1") or res_val == "ACTIVE":
                 ev_id = cite(rid, audit_at, sys_id, False, db_path)
                 findings.append({
                     "step_no": 0,
@@ -644,7 +689,7 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
 
     if is_incomplete:
         # C09: In incomplete cases, primary account is always verified absent (future: evidence_id="")
-        if acc_id:
+        if acc_id and acc_id != "unresolved":
             add_verif({
                 "step_no": 0,
                 "phase": "VERIFICATION",
@@ -717,7 +762,7 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
                 add_verif(v_copy)
     else:
         # COMPLETE case: evidence-backed verifications only
-        if acc_id:
+        if acc_id and acc_id != "unresolved":
             ev_id = cite(acc_id, audit_at, "account_service", False, db_path)
             add_verif({
                 "step_no": 0,

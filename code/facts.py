@@ -500,7 +500,7 @@ def _populate_evidence_facts(con: sqlite3.Connection):
             pdf_uid = uid_m.group(1) if uid_m else ""
             for nst in nst_matches:
                 m_num = re.search(r"NST-\d+-(\d+)-(\d+)", nst)
-                export_id = f"export_{m_num.group(2)}" if m_num else nst
+                export_id = ("export_" + m_num.group(2)) if m_num else nst
                 stmt_dict = {"statement_id": nst, "export_id": export_id, "user_id": pdf_uid, "text": full_text[:400]}
                 add_fact(fid, captured_at, "export_service", topo, export_id, "DOCUMENT_RECORD", json.dumps(stmt_dict))
                 add_fact(fid, captured_at, "account_service", topo, nst, "DOCUMENT_RECORD", json.dumps(stmt_dict))

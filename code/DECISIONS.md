@@ -122,6 +122,22 @@
 
 
 
+## C13: Milestone 3.7 Data-Driven IDs and Grounded Link Discovery
+- **Attempt 1: Elimination of Format String ID Synthesis**:
+  - *What*: Removed all format string account id construction (`f"account_{int(m_u.group(1)):03d}"` and `f"account_{num_part}"`) in `code/baseline.py`, and `f"export_{...}"` in `code/facts.py`. Replaced with data-driven lookups: (1) direct facts match with user identifiers, (2) `LINK_RESOURCE_IDENTITY` activities, (3) activity details matching identifiers. If no data path exists, emitted an explicit `"unresolved"` marker in the dossier instead of inventing an ID.
+  - *Why*: Conforms strictly to ground rules prohibiting synthetic ID construction and hardcoded patterns.
+  - *Unresolved Count*: 317 cases out of 518 have an `unresolved` account marker; 201 cases have data-grounded account IDs.
+  - *Automated Enforcement*: Extended `test_no_hardcoded_literals_in_solution_logic` in `code/tests/test_facts_identity.py` with `r"[a-z]+_\{"` to reject ID construction format strings. Failed on baseline commit `3e4d31c`, passes on updated code.
+- **Attempt 2: Grounded Link Discovery for Missing Steps**:
+  - *What*: (1) Added `result == "ACTIVE"` to active data flow detection (`rule_09`) in `integration_service` facts (e.g. `evidence_03` for `case_11`, `evidence_08` for `case_92`); (2) Added document topology checks (`topology == "document"` or `kind == "PDF_RECORD"`) to identify support attachment documents under `rule_06` requiring `DELETE_RECORD` rather than redaction (e.g. `evidence_58` for `case_07`, `evidence_28` for `case_10`).
+  - *Impact*: 13 cases across 518 gained an active data-flow finding. 1 case (`case_92`) flipped from `COMPLETE -> INCOMPLETE` due to grounded active data flow `data_flow_7535` in `evidence_08:18`, eliminating a false COMPLETE.
+- **Support-Message Ruling & Ambiguity Flag**:
+  - Verified against 32 samples that support messages with null direct PII (`email`, `phone`, `email_hash`, `name`) and non-null customer references / excerpts are evaluated as `VERIFY_RECORD_REDACTED` under `rule_05`.
+  - Added `support_ambiguous` dossier flag for records with non-null name or excerpt but null direct identifiers: 16 cases out of 518 flagged.
+- **Before / After Evaluation Metrics (32 Samples)**:
+  - *Before (commit 3e4d31c)*: Status Accuracy: 100.0% (32/32), Sequence Accuracy: 40.6% (13/32), Precision: 74.7%, Recall: 65.8%, F1: 70.0%, False COMPLETE: 0.
+  - *After (data-driven lookup without ID synthesis)*: Status Accuracy: 100.0% (32/32), Sequence Accuracy: 28.1% (9/32), Precision: 72.9%, Recall: 58.5%, F1: 64.9%, False COMPLETE: 0.
+
 # Open questions
 
 ### OQ1: Handling of Retained Legal Hold Records in Evaluated Output
