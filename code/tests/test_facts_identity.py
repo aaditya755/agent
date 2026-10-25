@@ -114,3 +114,18 @@ def test_strict_audit_at_boundary(facts_db):
 
     at_before = mentions("account_005", before_1s)
     assert not any(f.file_id == "evidence_54" for f in at_before)
+
+
+def test_no_hardcoded_literals_in_solution_logic():
+    """Ensure no case-number branches or literal resource/evidence IDs exist in code/*.py."""
+    import re
+    from pathlib import Path
+
+    code_path = Path(__file__).resolve().parents[1]
+    prohibited_pattern = re.compile(r"c_num|case_\d+|evidence_\d+|[a-z]+_\d{3,}")
+
+    for py_file in code_path.glob("*.py"):
+        text = py_file.read_text(encoding="utf-8")
+        matches = prohibited_pattern.findall(text)
+        assert not matches, f"Prohibited hardcoded literal(s) found in {py_file.name}: {matches}"
+

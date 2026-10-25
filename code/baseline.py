@@ -51,23 +51,25 @@ NON_DELETION_PATTERNS = [
 ]
 
 
-def is_non_deletion_request(request_text: str, activities: List[Dict[str, Any]] = None) -> bool:
-    """Determine whether a request is a non-deletion action (NOT_APPLICABLE)."""
+def is_non_deletion_request(request_text: str, activities: List[Dict[str, Any]] = None) -> Tuple[bool, bool, bool]:
+    """Determine whether a request is a non-deletion action (NOT_APPLICABLE).
+
+    Returns:
+        (is_non_del, has_event, has_pattern)
+        Rule: has_event AND has_pattern => NOT_APPLICABLE.
+    """
+    has_event = False
     if activities:
         for a in activities:
             if a.get("event_type") == "CLASSIFY_REQUEST":
-                return True
+                has_event = True
+                break
 
     text_lower = request_text.lower()
-    # Check explicit non-deletion expressions first
-    for pat in NON_DELETION_PATTERNS:
-        if re.search(pat, text_lower):
-            return True
+    has_pattern = any(re.search(pat, text_lower) for pat in NON_DELETION_PATTERNS)
 
-    if any(k in text_lower for k in ["delete", "remove", "erase", "close my account", "suppression", "eliminar", "löschen", "supprimer", "borrar"]):
-        return False
-
-    return False
+    is_non_del = has_event and has_pattern
+    return is_non_del, has_event, has_pattern
 
 
 def _search_json_identifiers(obj: Any, id_strings: Set[str]) -> bool:
@@ -140,25 +142,23 @@ def dossier(email: str, audit_at: str, db_path: Optional[Path] = None) -> Dict[s
                 pass
 
     if not acc_id and uid:
-        # Check user_01 to user_10
-        m_u = re.match(r"^user_0*(\d+)$", uid)
-        if m_u and int(m_u.group(1)) <= 10:
-            acc_id = f"account_{int(m_u.group(1)):03d}"
+        cur.execute(
+            """
+            SELECT resource_id FROM system_activity
+            WHERE source_system = 'deletion_worker' AND target_system = 'account_service'
+              AND event_time <= ?
+            ORDER BY event_time DESC LIMIT 1
+            """,
+            (audit_at,),
+        )
+        row = cur.fetchone()
+        if row:
+            acc_id = row[0]
         else:
-            # Check deletion_worker activities around audit_at or in system_activity
-            cur.execute(
-                """
-                SELECT resource_id FROM system_activity
-                WHERE source_system = 'deletion_worker' AND target_system = 'account_service'
-                  AND event_time <= ?
-                ORDER BY event_time DESC LIMIT 1
-                """,
-                (audit_at,),
-            )
-            row = cur.fetchone()
-            if row:
-                acc_id = row[0]
-            elif uid:
+            m_u = re.match(r"^user_0*(\d+)$", uid)
+            if m_u:
+                acc_id = f"account_{int(m_u.group(1)):03d}"
+            else:
                 num_part = uid.split("_")[1] if "_" in uid else "001"
                 acc_id = f"account_{num_part}"
 
@@ -176,8 +176,12 @@ def dossier(email: str, audit_at: str, db_path: Optional[Path] = None) -> Dict[s
 
     # 4. Check activities for this user <= audit_at
     cur.execute(
-        "SELECT activity_id, event_time, event_type, source_system, target_system, resource_id, status, details_json FROM system_activity WHERE event_time <= ? AND (subject_reference = ? OR details_json LIKE ?)",
-        (audit_at, uid, f"%{bag.current_email}%"),
+        """
+        SELECT activity_id, event_time, event_type, source_system, target_system, resource_id, status, details_json
+        FROM system_activity
+        WHERE event_time <= ? AND (subject_reference = ? OR details_json LIKE ? OR resource_id = ?)
+        """,
+        (audit_at, uid, f"%{bag.current_email}%", acc_id),
     )
     user_activities = [dict(r) for r in cur.fetchall()]
 
@@ -215,9 +219,10 @@ def cite(resource_id: str, audit_at: str, system_id: str, is_future: bool = Fals
     if system_id == "account_service":
         cur.execute(
             """
-            SELECT file_id FROM snapshot_coverage
-            WHERE system_id = 'account_service' AND captured_at <= ? AND file_id != 'evidence_90'
-            ORDER BY captured_at DESC LIMIT 1
+            SELECT sc.file_id FROM snapshot_coverage sc
+            WHERE sc.system_id = 'account_service' AND sc.captured_at <= ?
+              AND EXISTS (SELECT 1 FROM facts f WHERE f.file_id = sc.file_id)
+            ORDER BY sc.captured_at DESC LIMIT 1
             """,
             (audit_at,),
         )
@@ -238,7 +243,9 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
     activities = dossier_data.get("activities", [])
 
     # 1. Check NOT_APPLICABLE
-    if is_non_deletion_request(req_text, activities):
+    is_non_del, has_event, has_pattern = is_non_deletion_request(req_text, activities)
+    review_flags: List[str] = []
+    if is_non_del:
         return {
             "case_id": cid,
             "deletion_status": "NOT_APPLICABLE",
@@ -246,38 +253,23 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
             "remediations": [],
             "verifications": [],
             "all_steps": [],
+            "review_flags": review_flags,
         }
+    elif has_event != has_pattern:
+        flag = f"NOT_APPLICABLE mismatch: has_event={has_event}, has_pattern={has_pattern}"
+        review_flags.append(flag)
 
     bag = dossier_data["bag"]
     id_strings = {bag.user_id} | set(bag.emails) | set(bag.phones) | set(bag.email_hashes)
     id_strings.discard("")
     id_strings.discard(None)
 
+    direct_id_strings = set(bag.emails) | set(bag.phones) | set(bag.email_hashes)
+    direct_id_strings.discard("")
+    direct_id_strings.discard(None)
+
     acc_id = dossier_data.get("account_id") or ""
-    # Sample cases 1-10 synthetic naming convention
-    m_case = re.match(r"^case_(\d+)$", cid)
-    if m_case:
-        c_num = int(m_case.group(1))
-        if c_num <= 10:
-            acc_id = f"account_{c_num:03d}"
-
     resources = dossier_data.get("resources", {})
-
-    # Check sample special resources
-    if m_case:
-        c_num = int(m_case.group(1))
-        if c_num == 6:
-            cur.execute("SELECT file_id, captured_at, system_id, topology, resource_id, kind, fields_json FROM facts WHERE resource_id = 'search_001'")
-            resources["search_001"] = [dict(r) for r in cur.fetchall()]
-        elif c_num == 7:
-            cur.execute("SELECT file_id, captured_at, system_id, topology, resource_id, kind, fields_json FROM facts WHERE resource_id = 'support_001'")
-            resources["support_001"] = [dict(r) for r in cur.fetchall()]
-        elif c_num == 8:
-            cur.execute("SELECT file_id, captured_at, system_id, topology, resource_id, kind, fields_json FROM facts WHERE resource_id = 'export_001'")
-            resources["export_001"] = [dict(r) for r in cur.fetchall()]
-        elif c_num == 10:
-            cur.execute("SELECT file_id, captured_at, system_id, topology, resource_id, kind, fields_json FROM facts WHERE resource_id = 'support_002'")
-            resources["support_002"] = [dict(r) for r in cur.fetchall()]
 
     findings: List[Dict[str, Any]] = []
     remediations: List[Dict[str, Any]] = []
@@ -299,10 +291,16 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
             try:
                 jd = json.loads(row[1])
                 st = jd.get("account_status") or jd.get("status")
-                if st == "ACTIVE" or not st:
+                sc = jd.get("status_code")
+                prof = jd.get("profile")
+                if sc == 404 or prof is None and sc is not None:
+                    acc_is_active = False
+                elif st == "ACTIVE" or (not st and sc == 200):
                     acc_is_active = True
+                elif st in ("DELETED", "INACTIVE"):
+                    acc_is_active = False
             except Exception:
-                acc_is_active = True
+                acc_is_active = False
 
     if acc_is_active and acc_id:
         ev_id = cite(acc_id, audit_at, "account_service", False, db_path)
@@ -324,6 +322,12 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
             "state": "ABSENT",
             "evidence_id": "",
         })
+
+    # Track resource states
+    resource_states: Dict[str, str] = {}
+    for rid, f_list in resources.items():
+        if not f_list:
+            resource_states[rid] = "UNKNOWN"
 
     # Evaluate each downstream resource
     for rid, f_list in resources.items():
@@ -381,7 +385,6 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
             txt = jd.get("message_text") or jd.get("text_extract") or jd.get("message_excerpt") or ""
             is_att = (
                 "attachment" in f["kind"].lower()
-                or f["file_id"] == "evidence_58"
                 or jd.get("record_type") == "SUPPORT_ATTACHMENT"
                 or jd.get("collection_name") == "support_attachments"
                 or jd.get("marker_found") == "false"
@@ -407,7 +410,10 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
                     "evidence_id": "",
                 })
             else:
-                has_pii = any(ident in str(jd) for ident in id_strings) and "[REDACTED]" not in txt
+                has_pii = (
+                    any(ident in str(jd) for ident in direct_id_strings)
+                    or (any(ident in txt for ident in id_strings) and "[REDACTED]" not in txt)
+                )
                 if has_pii:
                     ev_id = cite(rid, audit_at, sys_id, False, db_path)
                     findings.append({
@@ -531,7 +537,14 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
 
         elif rid.startswith("backup_"):
             res_allowed = jd.get("restore_allowed")
-            if res_allowed in (True, 1, "1") or str(res_allowed).lower() in ("true", "1"):
+            is_active_risk = (
+                res_allowed in (True, 1, "1")
+                or str(res_allowed).lower() in ("true", "1")
+                or jd.get("result") == "ACTIVE"
+                or jd.get("eligible") in (True, "true")
+                or (jd.get("deletion_block") in (False, "false") and jd.get("eligible") is not None)
+            )
+            if is_active_risk:
                 ev_id = cite(rid, audit_at, sys_id, False, db_path)
                 findings.append({
                     "step_no": 0,
@@ -732,4 +745,6 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
         "remediations": remediations,
         "verifications": final_verifs,
         "all_steps": all_steps,
+        "resource_states": resource_states,
+        "review_flags": review_flags,
     }

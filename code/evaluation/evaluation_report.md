@@ -2,7 +2,7 @@
 
 ## 1. Case-Level Deletion-Status Accuracy
 - **Total Evaluated Cases**: 32 public sample requests
-- **Status Accuracy**: 84.4% (27/32 cases)
+- **Status Accuracy**: 100.0% (32/32 cases)
 - **Status Distribution**:
   - `INCOMPLETE`: 22 cases
   - `COMPLETE`: 10 cases
@@ -10,21 +10,21 @@
 
 ## 2. Step-Level and Field-Level Accuracy
 - **Step-Level Metrics**:
-  - **Precision**: 62.9%
-  - **Recall**: 55.4%
-  - **F1 Score**: 59.0%
-  - **Total Predicted Steps**: 170
+  - **Precision**: 65.5%
+  - **Recall**: 57.0%
+  - **F1 Score**: 60.9%
+  - **Total Predicted Steps**: 168
   - **Total Ground-Truth Steps**: 193
 - **Field-Level Accuracy**:
-  - `phase`: 86.3%
-  - `operation`: 69.6%
-  - `system_id`: 73.2%
-  - `resource_id`: 67.3%
-  - `state`: 72.0%
-  - `evidence_id`: 86.9%
+  - `phase`: 92.9%
+  - `operation`: 75.6%
+  - `system_id`: 81.0%
+  - `resource_id`: 71.4%
+  - `state`: 78.6%
+  - `evidence_id`: 95.8%
 
 ## 3. Sequence Accuracy
-- **Exact Step Sequence Accuracy**: 34.4% (11/32 cases)
+- **Exact Step Sequence Accuracy**: 21.9% (7/32 cases)
 - **Sorting Validation**: 100% adherence to canonical 4-tier sort hierarchy (phase_rank < operation_rank < system_id < resource_id) and consecutive step numbering starting at 1.
 
 ## 4. Participant-Created Custom Evaluation Cases

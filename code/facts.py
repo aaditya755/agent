@@ -479,7 +479,7 @@ def _populate_evidence_facts(con: sqlite3.Connection):
             with pdfplumber.open(fpath) as doc:
                 full_text = "\n".join([page.extract_text() or "" for page in doc.pages])
 
-            # Extract structured order entries in legal retention register (evidence_27)
+            # Extract structured order entries in legal retention register
             order_rows = re.findall(
                 r"(ORD-\d+)\s*\|\s*(user_\d+)\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*Retain until\s*([^|]+)\|\s*(\w+)",
                 full_text,
@@ -494,12 +494,14 @@ def _populate_evidence_facts(con: sqlite3.Connection):
                 }
                 add_fact(fid, captured_at, "legal_service", topo, ord_id, "LEGAL_HOLD_RECORD", json.dumps(ord_dict))
 
-            # Extract account statement & export references (evidence_18)
+            # Extract account statement & export references
             nst_matches = set(re.findall(r"Statement\s+(NST-\d+-\d+-\d+)", full_text, re.IGNORECASE))
+            uid_m = re.search(r"\b(user_\d+)\b", full_text)
+            pdf_uid = uid_m.group(1) if uid_m else ""
             for nst in nst_matches:
                 m_num = re.search(r"NST-\d+-(\d+)-(\d+)", nst)
                 export_id = f"export_{m_num.group(2)}" if m_num else nst
-                stmt_dict = {"statement_id": nst, "export_id": export_id, "user_id": "user_18", "text": full_text[:400]}
+                stmt_dict = {"statement_id": nst, "export_id": export_id, "user_id": pdf_uid, "text": full_text[:400]}
                 add_fact(fid, captured_at, "export_service", topo, export_id, "DOCUMENT_RECORD", json.dumps(stmt_dict))
                 add_fact(fid, captured_at, "account_service", topo, nst, "DOCUMENT_RECORD", json.dumps(stmt_dict))
 
@@ -508,19 +510,22 @@ def _populate_evidence_facts(con: sqlite3.Connection):
                 if not any(om == r[0] for r in order_rows):
                     add_fact(fid, captured_at, sys_id, topo, om, "DOCUMENT_RECORD", json.dumps({"order_id": om, "text": full_text[:400]}))
 
-            # Extract security audit records in extracts (evidence_55)
+            # Extract security audit records in extracts
             audit_matches = set(re.findall(r"(audit_record_\d+)", full_text))
             for arm in audit_matches:
                 add_fact(fid, captured_at, "security_service", topo, arm, "PDF_RECORD", json.dumps({"text_extract": full_text[:500]}))
 
-            # Extract support message references in attachments (evidence_58)
+            # Extract support message references in attachments
             supp_matches = set(re.findall(r"(support_\d+)", full_text))
             email_m = re.search(r"[\w\.-]+@[\w\.-]+", full_text)
             pdf_email = email_m.group(0).lower() if email_m else None
+            is_attachment_doc = "attachment" in fpath.name.lower() or "correction" in fpath.name.lower()
+            rec_kind = "PDF_ATTACHMENT" if is_attachment_doc else "PDF_RECORD"
             for sm in supp_matches:
-                add_fact(fid, captured_at, "support_platform", topo, sm, "PDF_RECORD", json.dumps({
+                add_fact(fid, captured_at, "support_platform", topo, sm, rec_kind, json.dumps({
                     "text_extract": full_text[:500],
                     "email": pdf_email,
+                    "record_type": "SUPPORT_ATTACHMENT" if is_attachment_doc else "SUPPORT_MESSAGE",
                 }))
 
     cur.executemany(

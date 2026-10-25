@@ -70,6 +70,22 @@
   - `legal_hold_register_steps`: off (retained external legal hold register records in evidence_27 emit 0 steps).
   - `secondary_identifier_steps`: off (historical/secondary emails emit 0 separate steps).
 
+### C12: Generic Discovery and Elimination of Hardcoding (Milestone 3.5)
+- **VERIFIED (`code/baseline.py`, `code/tests/test_facts_identity.py`)**: All hardcoded case IDs, `c_num` branch blocks, and literal evidence IDs (`evidence_58`, `evidence_90`) were removed from solution code. A dedicated unit test `test_no_hardcoded_literals_in_solution_logic` verifies that no prohibited literals exist in `code/*.py`.
+- **Sample Discovery Results (Before vs. After)**:
+  - `case_06`: `search_001` discovered generically via SQL query on email `jonas.berg@outlook.com` in `evidence_57`.
+  - `case_07`: `support_001` discovered generically via PDF email extract `priya.raman@gmail.com` in `evidence_58`.
+  - `case_08`: `export_001` discovered generically via SQL query on email `gabriel.costa@proton.me` in `evidence_59`.
+  - `case_10`: `support_002` discovered generically via log trace token `subject_ref=nadia.ionescu@yahoo.com` in `evidence_61`.
+- **Confusion Matrix Evolution on 32 Samples**:
+  - *Before*: 27 / 32 correct (84.4%). Mismatches: false `COMPLETE` on `case_14`, `case_17`; false `INCOMPLETE` on `case_26`, `case_27`, `case_28`.
+  - *General Rule Fixes*:
+    1. Backup active risk evaluation: extended beyond boolean `restore_allowed` to also detect `result == "ACTIVE"` and log event flags `eligible == "true"` with `deletion_block == "false"`. (Fixes `case_14` and `case_17` to `INCOMPLETE`).
+    2. Primary account active evaluation: checks HTTP status code 404 / null profile in snapshot lookups, preventing deleted accounts from being classified as active profiles. (Fixes `case_26` and `case_27` to `COMPLETE`).
+    3. Support conversation PII check: checks direct identifying fields (`email`, `phone`, `email_hash`) in structured record dicts rather than matching stable internal `customer_reference` (`user_id`). (Fixes `case_28` to `COMPLETE`).
+  - *After*: 32 / 32 correct (100.0% status accuracy; Confusion Matrix: `('COMPLETE', 'COMPLETE'): 10`, `('INCOMPLETE', 'INCOMPLETE'): 22`).
+
+
 
 # Open questions
 

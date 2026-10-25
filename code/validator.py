@@ -182,10 +182,10 @@ def validate_output_file(
         # Case numerical ordering
         m = re.match(r"^case_(\d+)$", cid)
         if m:
-            c_num = int(m.group(1))
-            if c_num <= prev_case_num:
+            case_index = int(m.group(1))
+            if case_index <= prev_case_num:
                 errors.append(f"Row {row_idx}: case_id {cid} out of sort order (prev case index {prev_case_num})")
-            prev_case_num = c_num
+            prev_case_num = case_index
         else:
             errors.append(f"Row {row_idx}: invalid case_id format '{cid}'")
 

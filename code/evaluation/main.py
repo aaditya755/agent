@@ -157,7 +157,8 @@ def run_custom_cases() -> List[Dict[str, Any]]:
 
     results = []
     for c in custom_cases:
-        is_non_del = baseline.is_non_deletion_request(c["request_text"])
+        res = baseline.is_non_deletion_request(c["request_text"])
+        is_non_del = res[0] if isinstance(res, tuple) else res
         status = "NOT_APPLICABLE" if is_non_del else c["expected_status"]
         passed = (status == c["expected_status"])
         results.append({
@@ -172,8 +173,6 @@ def run_custom_cases() -> List[Dict[str, Any]]:
 
 def generate_reports(eval_metrics: Dict[str, Any], custom_results: List[Dict[str, Any]]):
     """Generate evaluation_report.md and usage_report.md in evaluation/."""
-    eval_dir = REPO_ROOT / "evaluation"
-    eval_dir.mkdir(parents=True, exist_ok=True)
     code_eval_dir = _code_dir / "evaluation"
     code_eval_dir.mkdir(parents=True, exist_ok=True)
 
@@ -228,7 +227,7 @@ def generate_reports(eval_metrics: Dict[str, Any], custom_results: List[Dict[str
    - *Improvement*: Formalized C09 policy: incomplete cases emit verification checks strictly for the primary account (`VERIFY_RECORD_ABSENT`), retained security audit logs (`VERIFY_RECORD_PRESENT`), and remediated resources.
 """
 
-    for out_p in [eval_dir / "evaluation_report.md", code_eval_dir / "evaluation_report.md"]:
+    for out_p in [code_eval_dir / "evaluation_report.md"]:
         with open(out_p, "w", encoding="utf-8") as f:
             f.write(report_content)
 
@@ -259,11 +258,11 @@ def generate_reports(eval_metrics: Dict[str, Any], custom_results: List[Dict[str
 - **Schema Validation Errors**: 0 errors across 518 output rows
 """
 
-    for out_p in [eval_dir / "usage_report.md", code_eval_dir / "usage_report.md"]:
+    for out_p in [code_eval_dir / "usage_report.md"]:
         with open(out_p, "w", encoding="utf-8") as f:
             f.write(usage_content)
 
-    print(f"Reports successfully written to {eval_dir} and {code_eval_dir}")
+    print(f"Reports successfully written to {code_eval_dir}")
 
 
 def main():
