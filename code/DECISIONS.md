@@ -85,6 +85,41 @@
     3. Support conversation PII check: checks direct identifying fields (`email`, `phone`, `email_hash`) in structured record dicts rather than matching stable internal `customer_reference` (`user_id`). (Fixes `case_28` to `COMPLETE`).
   - *After*: 32 / 32 correct (100.0% status accuracy; Confusion Matrix: `('COMPLETE', 'COMPLETE'): 10`, `('INCOMPLETE', 'INCOMPLETE'): 22`).
 
+## C12: Milestone 3.6 Step Accuracy Optimization & Flip Audit
+- **Attempt 1 Benchmark**:
+  - *General Rule*: Prioritize matched stable user-to-account mapping pattern `account_{int(uid):03d}` before generic deletion_worker queries in `dossier()`, and inspect nested `record_json` string payloads for `account_status == "ACTIVE"`.
+  - *Sequence Accuracy*: Improved from 11/32 (34.4%) to 12/32 (37.5%).
+  - *Step F1*: Improved from 64.8% to 68.3% (Precision: 72.9%, Recall: 64.2%).
+  - *Status Accuracy*: Maintained at 32/32 (100.0%).
+  - *False COMPLETE*: 0.
+- **Attempt 2 Exploration**:
+  - *Investigation*: Evaluated synthesizing analytics and security verification steps from global activity and evidence files captured across temporal boundaries.
+  - *Outcome*: Any synthetic verification injection for ungrounded resources risk emitting unproven claims or false positives without evidence proofs <= `audit_at`. Status accuracy remained 100.0% and Sequence accuracy held at 37.5%. Stopped after 2 non-improving attempts per protocol.
+- **Flip Audit Findings (commit 6d884ba -> current)**:
+  - Total `INCOMPLETE -> COMPLETE` flips: 41 cases out of 518.
+  - Grouped by disappearing finding (`operation:system_id`):
+    - `REPORT_EXPOSED_PII:support_platform`: 29 cases.
+    - `REPORT_REMAINING_RECORD:account_service`: 10 cases.
+    - `REPORT_EXPOSED_PII:support_platform` + `REPORT_REMAINING_RECORD:account_service`: 2 cases (`case_231`, `case_344`).
+  - *Cause*: Previous code falsely flagged support messages as exposed PII merely because internal `customer_reference` matched `user_id`, even when direct PII fields (`email`, `phone`, `email_hash`) were null. Similarly, account records with HTTP 404 / `result: "NOT_FOUND"` at `audit_at` were previously counted as active remaining records due to unconstrained temporal matching.
+- **Support Message Compliance Ruling**:
+  - Under `rule_05`, redaction requires removing direct prohibited identifiers (`email`, `phone`, `email_hash`). Stable internal references (`customer_reference`) and message excerpts with customer text are permissible once direct identifiers are redacted. Thus, support messages lacking direct PII pass as compliant (`VERIFY_RECORD_REDACTED`).
+- **PNG Pending Cases**:
+  - 10 of 11 `png_pending` cases are currently classified as `COMPLETE` due to lack of non-image evidence <= `audit_at`.
+  - Required findings if PNGs evidence `PRESENT` state:
+    - `case_33` (`export_1260`): `REPORT_REMAINING_RECORD` on `export_service` (`rule_04`).
+    - `case_35` (`search_428`): `REPORT_REMAINING_RECORD` on `search_service` (`rule_03`).
+    - `case_39` (`data_flow_1121`): `REPORT_ACTIVE_DATA_FLOW` on `integration_service` (`rule_09`).
+    - `case_45` (`audit_record_003`): `VERIFY_RECORD_PRESENT` on `security_service` (`rule_14`).
+    - `case_46` (`tombstone_17`): `REPORT_EXPOSED_PII` on `identity_service` if PII exposed, else tombstone compliant (`rule_15`).
+    - `case_50` (`analytics_7438`): `REPORT_EXPOSED_PII` or `REPORT_REMAINING_RECORD` on `analytics_platform` (`rule_07`/`rule_08`).
+    - `case_52` (`export_1260`): `REPORT_REMAINING_RECORD` on `export_service` (`rule_04`).
+    - `case_53` (`support_1034`): `REPORT_REMAINING_RECORD` or `REPORT_EXPOSED_PII` on `support_platform` (`rule_05`/`rule_06`).
+    - `case_55` (`backup_9287`): `REPORT_RESTORE_RISK` on `backup_service` (`rule_10`).
+    - `case_61` (`object_19`): `REPORT_REMAINING_RECORD` on `object_storage`.
+    - `case_63` (`marketing_001`): `REPORT_REMAINING_RECORD` on `marketing_platform`.
+
+
 
 
 # Open questions

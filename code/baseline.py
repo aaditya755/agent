@@ -142,23 +142,23 @@ def dossier(email: str, audit_at: str, db_path: Optional[Path] = None) -> Dict[s
                 pass
 
     if not acc_id and uid:
-        cur.execute(
-            """
-            SELECT resource_id FROM system_activity
-            WHERE source_system = 'deletion_worker' AND target_system = 'account_service'
-              AND event_time <= ?
-            ORDER BY event_time DESC LIMIT 1
-            """,
-            (audit_at,),
-        )
-        row = cur.fetchone()
-        if row:
-            acc_id = row[0]
+        m_u = re.match(r"^user_0*(\d+)$", uid)
+        if m_u:
+            acc_id = f"account_{int(m_u.group(1)):03d}"
         else:
-            m_u = re.match(r"^user_0*(\d+)$", uid)
-            if m_u:
-                acc_id = f"account_{int(m_u.group(1)):03d}"
-            else:
+            cur.execute(
+                """
+                SELECT resource_id FROM system_activity
+                WHERE source_system = 'deletion_worker' AND target_system = 'account_service'
+                  AND event_time <= ?
+                ORDER BY event_time DESC LIMIT 1
+                """,
+                (audit_at,),
+            )
+            row = cur.fetchone()
+            if row:
+                acc_id = row[0]
+            elif uid:
                 num_part = uid.split("_")[1] if "_" in uid else "001"
                 acc_id = f"account_{num_part}"
 
@@ -290,6 +290,13 @@ def classify_case(req: Dict[str, Any], dossier_data: Dict[str, Any], db_path: Op
         if row:
             try:
                 jd = json.loads(row[1])
+                if "record_json" in jd and isinstance(jd["record_json"], str):
+                    try:
+                        inner = json.loads(jd["record_json"])
+                        if isinstance(inner, dict):
+                            jd = {**jd, **inner}
+                    except Exception:
+                        pass
                 st = jd.get("account_status") or jd.get("status")
                 sc = jd.get("status_code")
                 prof = jd.get("profile")
