@@ -7,18 +7,24 @@ No absolute paths, secrets, or hardcoded dataset shortcuts are permitted.
 from pathlib import Path
 import os
 import sys
+from dotenv import load_dotenv
 
 # Ensure flat imports within code/ directory
 _current_dir = Path(__file__).resolve().parent
 if str(_current_dir) not in sys.path:
     sys.path.insert(0, str(_current_dir))
 
-# Repository Root & Path Resolution (Path(__file__).resolve().parents[1])
+# Repository Root & Path Resolution
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATASET_DIR = REPO_ROOT / "dataset"
 EVIDENCE_DIR = DATASET_DIR / "evidence"
 CACHE_DIR = REPO_ROOT / "cache"
+CACHE_LLM_DIR = CACHE_DIR / "llm"
+USAGE_LEDGER_PATH = CACHE_DIR / "usage.jsonl"
 FACTS_DB_PATH = CACHE_DIR / "facts.sqlite"
+
+# Load environment variables from .env
+load_dotenv(REPO_ROOT / ".env")
 
 # Primary Dataset File Paths
 DELETION_REQUESTS_PATH = DATASET_DIR / "deletion_requests.csv"
@@ -68,6 +74,43 @@ VERIFY_COMPLIANT_IN_INCOMPLETE = "account+retained+remediated only"
 LEGAL_HOLD_REGISTER_STEPS = False
 SECONDARY_IDENTIFIER_STEPS = False
 
-# Model Names from Environment Variables
-DEFAULT_MODEL = os.getenv("MODEL_NAME", "gemini-3.8-flash")
-VLM_MODEL = os.getenv("VLM_MODEL_NAME", DEFAULT_MODEL)
+
+def _get_required_env(var_name: str) -> str:
+    val = os.getenv(var_name)
+    if not val or not val.strip():
+        raise ValueError(
+            f"Environment variable '{var_name}' is unset. Please configure it in .env or your shell environment."
+        )
+    return val.strip()
+
+
+def get_gemini_api_key() -> str:
+    """Retrieve GEMINI_API_KEY from environment. Fails clearly if unset."""
+    return _get_required_env("GEMINI_API_KEY")
+
+
+def get_model_agent() -> str:
+    """Retrieve GEMINI_MODEL_AGENT from environment. Fails clearly if unset."""
+    return _get_required_env("GEMINI_MODEL_AGENT")
+
+
+def get_model_escalation() -> str:
+    """Retrieve GEMINI_MODEL_ESCALATION from environment. Fails clearly if unset."""
+    return _get_required_env("GEMINI_MODEL_ESCALATION")
+
+
+def get_model_vision() -> str:
+    """Retrieve GEMINI_MODEL_VISION from environment. Fails clearly if unset."""
+    return _get_required_env("GEMINI_MODEL_VISION")
+
+
+def __getattr__(name: str):
+    if name == "GEMINI_API_KEY":
+        return get_gemini_api_key()
+    elif name == "GEMINI_MODEL_AGENT":
+        return get_model_agent()
+    elif name == "GEMINI_MODEL_ESCALATION":
+        return get_model_escalation()
+    elif name == "GEMINI_MODEL_VISION":
+        return get_model_vision()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

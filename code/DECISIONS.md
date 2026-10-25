@@ -138,6 +138,12 @@
   - *Before (commit 3e4d31c)*: Status Accuracy: 100.0% (32/32), Sequence Accuracy: 40.6% (13/32), Precision: 74.7%, Recall: 65.8%, F1: 70.0%, False COMPLETE: 0.
   - *After (data-driven lookup without ID synthesis)*: Status Accuracy: 100.0% (32/32), Sequence Accuracy: 28.1% (9/32), Precision: 72.9%, Recall: 58.5%, F1: 64.9%, False COMPLETE: 0.
 
+## C14: Milestone 4a LLM Plumbing and Infrastructure
+- **SDK & Environment Configuration**: Installed `google-genai==2.33.0`, `python-dotenv==1.2.4`, `pytest==9.1.1` and froze dependencies to `code/requirements.txt`. Configured strict environment variable ingestion (`GEMINI_API_KEY`, `GEMINI_MODEL_AGENT`, `GEMINI_MODEL_ESCALATION`, `GEMINI_MODEL_VISION`) without fallback defaults.
+- **Resilience & Caching (`code/llm.py`)**: Thin client wrapper enforcing temperature 0.0, 60s timeout, exponential backoff (max 3 retries) on HTTP 429 and 5xx, typed `QuotaExhausted` exception, and SHA256 disk cache in `cache/llm/` keyed by `(model + prompt + tool schemas + response schema + image bytes hash)`.
+- **Usage Accounting (`code/usage.py`)**: Append-only JSONL ledger in `cache/usage.jsonl` tracking timestamp, purpose, model, input/output tokens (from SDK metadata), cache hits, and latency. `usage-summary` CLI reports per-model and overall totals with unconfigured pricing reported strictly as `cost: unknown (prices not set)`.
+- **Test Suite**: Added offline unit test suite `code/tests/test_llm.py` with mock clients verifying cache hits/misses, retry backoff, quota exhaustion, and usage summaries without network access (14/14 tests pass).
+
 # Open questions
 
 ### OQ1: Handling of Retained Legal Hold Records in Evaluated Output

@@ -3,6 +3,9 @@
 Usage:
     python code/main.py run [--sample] [--output <path>]
     python code/main.py validate [--file <path>] [--sample]
+    python code/main.py llm-models
+    python code/main.py llm-smoke
+    python code/main.py usage-summary
 """
 
 import argparse
@@ -100,6 +103,103 @@ def run_audit(sample: bool = False, output_path: Optional[Path] = None) -> Path:
     return output_path
 
 
+def cmd_llm_models():
+    """List models available to current key that support generateContent."""
+    import config
+    import llm
+
+    try:
+        client = llm.get_client()
+        for m in client.models.list():
+            actions = getattr(m, "supported_actions", None) or []
+            if any("generateContent" in a for a in actions):
+                print(m.name)
+    except Exception as e:
+        print(f"Error listing models: {e}")
+        sys.exit(1)
+
+
+def cmd_llm_smoke():
+    """Execute 3 smoke tests: plain text, tool call, PNG with strict JSON output."""
+    import config
+    import llm
+    from pydantic import BaseModel, Field
+
+    # 1. Plain text call
+    print("=== SMOKE 1: Plain Text ===")
+    try:
+        model = config.get_model_agent()
+        res1 = llm.generate(
+            prompt="Respond with the exact word 'PONG'.",
+            model=model,
+            purpose="smoke-plain",
+        )
+        print("PASS")
+        print(f"Raw response: {res1.text[:500]}")
+        print(f"Raw usage: in={res1.input_tokens}, out={res1.output_tokens}, hit={res1.cache_hit}, latency={res1.latency_ms:.1f}ms")
+    except Exception as e:
+        print("FAIL")
+        print(f"Error: {e}")
+
+    # 2. Function call with trivial tool
+    print("\n=== SMOKE 2: Function Call (Trivial Tool) ===")
+    try:
+        model = config.get_model_agent()
+
+        def add_numbers(a: int, b: int) -> int:
+            """Add two integer numbers."""
+            return a + b
+
+        res2 = llm.generate(
+            prompt="What is 7 plus 5? Use the add_numbers tool.",
+            model=model,
+            purpose="smoke-tool",
+            tools=[add_numbers],
+        )
+        print("PASS")
+        fc_str = str([{"name": fc.name, "args": fc.args} for fc in res2.function_calls])
+        print(f"Raw response: {res2.text[:500]} | function_calls: {fc_str[:500]}")
+        print(f"Raw usage: in={res2.input_tokens}, out={res2.output_tokens}, hit={res2.cache_hit}, latency={res2.latency_ms:.1f}ms")
+    except Exception as e:
+        print("FAIL")
+        print(f"Error: {e}")
+
+    # 3. Vision PNG with strict JSON output
+    print("\n=== SMOKE 3: Vision PNG (Strict JSON) ===")
+    try:
+        model = config.get_model_vision()
+        img_dir = REPO_ROOT / "dataset" / "evidence" / "images"
+        png_files = sorted(list(img_dir.glob("*.png")))
+        if not png_files:
+            raise FileNotFoundError(f"No PNG evidence images found in {img_dir}")
+        img_path = png_files[0]
+        img_bytes = img_path.read_bytes()
+
+        class ConsoleScreenInspection(BaseModel):
+            system_name: str = Field(description="Name or title of system/console shown")
+            observations: str = Field(description="Key status or details observed in console")
+
+        res3 = llm.generate(
+            prompt="Extract the console system name and key observations from this screenshot.",
+            model=model,
+            purpose="smoke-vision",
+            image_bytes=img_bytes,
+            response_schema=ConsoleScreenInspection,
+        )
+        print("PASS")
+        print(f"Raw response: {res3.text[:500]}")
+        print(f"Raw usage: in={res3.input_tokens}, out={res3.output_tokens}, hit={res3.cache_hit}, latency={res3.latency_ms:.1f}ms")
+    except Exception as e:
+        print("FAIL")
+        print(f"Error: {e}")
+
+
+def cmd_usage_summary():
+    """Print usage ledger summary."""
+    import usage
+    usage.print_usage_summary()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ghost Data Still Exists CLI Runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -111,6 +211,10 @@ def main():
     val_parser = subparsers.add_parser("validate", help="Validate output CSV")
     val_parser.add_argument("--file", type=str, default=str(OUTPUT_PATH), help="Path to CSV file to validate")
     val_parser.add_argument("--sample", action="store_true", help="Validate as sample dataset (32 cases)")
+
+    subparsers.add_parser("llm-models", help="List available models supporting generateContent")
+    subparsers.add_parser("llm-smoke", help="Run LLM smoke tests (plain text, tool call, PNG)")
+    subparsers.add_parser("usage-summary", help="Print usage ledger summary")
 
     args = parser.parse_args()
 
@@ -129,6 +233,12 @@ def main():
             for err in errors[:15]:
                 print(f"  * {err}")
             sys.exit(1)
+    elif args.command == "llm-models":
+        cmd_llm_models()
+    elif args.command == "llm-smoke":
+        cmd_llm_smoke()
+    elif args.command == "usage-summary":
+        cmd_usage_summary()
 
 
 if __name__ == "__main__":
