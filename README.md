@@ -40,7 +40,67 @@ python3 code/main.py
 The blank template at `dataset/output.csv` is provided as a reference. Your final generated file for submission must be the root-level `output.csv`.
 
 
+## Solution Quick Start & Runner Guide
+
+### 1. Setup Instructions
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONUTF8=1
+pip install -r code/requirements.txt
+```
+
+### 2. Environment Variables
+Add the following variable names to `.env` (never commit keys or sensitive values):
+- `NVIDIA_API_KEY`: NVIDIA NIM API key for OpenAI-compatible endpoint.
+- `LLM_PROVIDER_AGENT`: Provider name for agent (`openai_compat`).
+- `LLM_PROVIDER_ESCALATION`: Provider name for escalation (`openai_compat`).
+- `LLM_PROVIDER_VISION`: Provider name for vision extraction (`openai_compat`).
+- `LLM_MODEL_AGENT`: Model identifier (`nvidia/nemotron-3.5-super-vl-120b-a12b`).
+- `LLM_MODEL_ESCALATION`: Model identifier (`nvidia/nemotron-3.5-super-vl-120b-a12b`).
+- `LLM_MODEL_VISION`: Model identifier (`nvidia/nemotron-3.5-super-vl-120b-a12b`).
+- `GEMINI_API_KEY`: Optional fallback key for Google Gemini.
+
+### 3. Execution Commands
+```powershell
+# Extract visual evidence facts from PNG screenshots
+python code/main.py extract-png
+
+# Run baseline audit engine (518 cases)
+python code/main.py run
+
+# Run audit engine with LLM tool-calling agent on flagged cases
+python code/main.py run --agent
+
+# Run sample dataset (32 cases)
+python code/main.py run --sample
+
+# Validate output CSV format and rules compliance
+python code/main.py validate --file output.csv
+
+# Run evaluation benchmark and generate reports
+python code/evaluation/main.py
+
+# Run test suite
+python -m pytest -q
+```
+
+### 4. Architecture Overview
+- **Fact Store (`code/facts.py`, `code/extract_png.py`)**: SQLite-backed point-in-time facts store enforcing `captured_at <= audit_at` query filtering.
+- **Baseline Engine (`code/baseline.py`, `code/identity.py`)**: Resolves current and historical identifiers and evaluates rules 01–15.
+- **Tool-Calling Agent (`code/agent.py`, `code/tools.py`)**: Scoped to flagged cases with case-bound tools, returning judgments only.
+- **Validator & Finalizer (`code/steps.py`, `code/validator.py`)**: Canonical 4-tier sorting and strict schema validation.
+
+### 5. Honest Limitations
+- Metrics evaluated against 32 visible sample cases.
+- 317 evaluation cases have unlinked account records.
+- PDF registers evaluated via structural policy rather than OCR extraction.
+- Agent scoped to flagged cases (intent, support, visual evidence) for throughput and stability.
+
+---
+
 ## Dataset
+
 
 All participant-facing files are in `dataset/`:
 
